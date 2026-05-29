@@ -427,6 +427,74 @@ class SchedulerManager:
                     else:
                         await self.add_log(db, account_id, f"Не удалось отправить напоминание об отзыве для заказа {order_id}", "WARNING")
 
+    async def job_full_sync(self, account_id: int):
+        """Задача: Полная фоновая синхронизация данных (баланс, отзывы, кэширование лотов)."""
+        async with async_session_maker() as db:
+            account = await db.get(FanpayAccount, account_id)
+            if not account or not account.is_active:
+                return
+
+            client = FanpayClient(
+                golden_key=account.golden_key,
+                proxy_url=account.proxy_url,
+                user_agent=account.user_agent,
+                cookies=account.cookies
+            )
+            
+            await self.add_log(db, account_id, "Запуск фоновой полной синхронизации...")
+            
+            try:
+                # 1. Синхронизируем статистику профиля
+                stats = await client.sync_profile_and_stats()
+                if stats["funpay_user_id"]:
+                    account.funpay_user_id = stats["funpay_user_id"]
+                account.balance = stats["balance"]
+                account.rating = stats["rating"]
+                account.reviews_count = stats["reviews_count"]
+                
+                if stats["username"] != "Unknown":
+                    account.last_status = f"Active ({stats['username']})"
+                    # Обновляем имя, если в нем еще нет никнейма
+                    account.name = f"{account.name.split(' (')[0]} ({stats['username']})"
+                
+                # 2. Получаем активные лоты
+                lots = await client.get_active_lots()
+                account.lots_cache = lots
+                account.last_synced = datetime.utcnow()
+                
+                db.add(account)
+                await db.commit()
+                
+                await self.add_log(db, account_id, f"Фоновая синхронизация завершена. Найдено активных лотов: {len(lots)}.")
+            except Exception as e:
+                await self.add_log(db, account_id, f"Ошибка фоновой синхронизации: {e}", "WARNING")
+            
+            # Планируем следующее случайное обновление через 30-120 минут
+            self.schedule_next_full_sync(account_id)
+
+    def schedule_next_full_sync(self, account_id: int):
+        """Планирует следующий запуск полной синхронизации через случайное время от 30 до 120 минут."""
+        key = f"account_{account_id}_full_sync"
+        if key in self.active_jobs:
+            try:
+                self.scheduler.remove_job(self.active_jobs[key])
+            except Exception:
+                pass
+            del self.active_jobs[key]
+
+        delay_minutes = random.randint(30, 120)
+        run_time = datetime.now() + timedelta(minutes=delay_minutes)
+        
+        job = self.scheduler.add_job(
+            self.job_full_sync,
+            trigger='date',
+            run_date=run_time,
+            args=[account_id],
+            id=key
+        )
+        self.active_jobs[key] = job.id
+        logger.info(f"Следующая полная синхронизация для аккаунта {account_id} запланирована на {run_time.strftime('%Y-%m-%d %H:%M:%S')}")
+
     # =========================================================================
     # УПРАВЛЕНИЕ ЖИЗНЕННЫМ ЦИКЛОМ ДЖОБ
     # =========================================================================
@@ -483,11 +551,22 @@ class SchedulerManager:
         )
         self.active_jobs[f"account_{account_id}_followup"] = job_followup.id
 
+        # 6. Полная фоновая синхронизация (запуск через 5 секунд, далее по цепочке через рандомные интервалы)
+        run_time = datetime.now() + timedelta(seconds=5)
+        job_sync = self.scheduler.add_job(
+            self.job_full_sync,
+            trigger='date',
+            run_date=run_time,
+            args=[account_id],
+            id=f"account_{account_id}_full_sync"
+        )
+        self.active_jobs[f"account_{account_id}_full_sync"] = job_sync.id
+
         logger.info(f"Все фоновые задачи для аккаунта {account_id} успешно зарегистрированы.")
 
     def unregister_account_jobs(self, account_id: int):
         """Удаляет все фоновые задачи для аккаунта."""
-        job_suffixes = ["online", "raise", "delivery", "damping", "followup"]
+        job_suffixes = ["online", "raise", "delivery", "damping", "followup", "full_sync"]
         for suffix in job_suffixes:
             key = f"account_{account_id}_{suffix}"
             if key in self.active_jobs:

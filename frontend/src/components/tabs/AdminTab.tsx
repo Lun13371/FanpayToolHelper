@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import { useState, useEffect } from 'react';
 import { motion } from 'framer-motion';
 import { Users } from 'lucide-react';
 import { useAppContext, API_URL } from '../../context/AppContext';

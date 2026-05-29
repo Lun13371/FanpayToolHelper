@@ -11,7 +11,7 @@ from app.models.user import User, UserRole
 from app.models.delivery import AutoDeliveryItem
 from app.models.review import AutoReviewTemplate
 from app.models.competitor import CompetitorBlacklist
-from app.api.lots import verify_account_access
+from app.api.accounts import verify_account_access
 
 router = APIRouter(prefix="/delivery", tags=["Склад автовыдачи и Настройки"])
 

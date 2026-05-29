@@ -38,6 +38,10 @@ class FanpayAccount(SQLModel, table=True):
     reviews_count: int = Field(default=0)
     last_raised: Optional[datetime] = Field(default=None)
     
+    # Время последней полной синхронизации и кэш лотов
+    last_synced: Optional[datetime] = Field(default=None)
+    lots_cache: Optional[List[Dict[str, Any]]] = Field(default=None, sa_column=Column(JSON))
+    
     # Таймстамп последнего ручного ответа оператора в чате Funpay для засыпания ИИ на 20 минут
     last_operator_activity: Optional[datetime] = Field(default=None)
     created_at: datetime = Field(default_factory=datetime.utcnow)

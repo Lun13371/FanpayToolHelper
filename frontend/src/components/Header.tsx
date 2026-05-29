@@ -1,4 +1,3 @@
-import React from 'react';
 import { Sparkles, LogOut } from 'lucide-react';
 import { useAppContext } from '../context/AppContext';
 
@@ -55,6 +54,14 @@ export default function Header() {
             }`}
           >
             Менеджер
+          </button>
+          <button
+            onClick={() => setActiveTab('templates')}
+            className={`py-1.5 px-3.5 rounded-xl text-xs font-medium shrink-0 transition-all ${
+              activeTab === 'templates' ? 'bg-white/10 text-white shadow-sm' : 'text-slate-400 hover:text-white'
+            }`}
+          >
+            Шаблоны
           </button>
           {user?.role === 'admin' && (
             <>

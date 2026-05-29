@@ -10,7 +10,7 @@ from app.api.deps import get_current_user
 from app.models.user import User, UserRole
 from app.models.account import FanpayAccount
 from app.models.lot import LotSettings
-from app.api.accounts import check_manager_permission
+from app.api.accounts import check_manager_permission, verify_account_access
 
 router = APIRouter(prefix="/lots", tags=["Настройка Демпинга"])
 
@@ -39,20 +39,6 @@ class LotResponse(BaseModel):
 
     class Config:
         from_attributes = True
-
-
-async def verify_account_access(db: AsyncSession, user: User, account_id: int):
-    """Вспомогательный метод для проверки доступа пользователя к аккаунту."""
-    account = await db.get(FanpayAccount, account_id)
-    if not account:
-        raise HTTPException(status_code=404, detail="Аккаунт Fanpay не найден")
-        
-    if user.role == UserRole.MANAGER:
-        if not await check_manager_permission(db, user.id, account_id):
-            raise HTTPException(status_code=403, detail="Менеджер не имеет доступа к этому аккаунту")
-    elif user.role == UserRole.OWNER:
-        if account.user_id != user.id:
-            raise HTTPException(status_code=403, detail="Владелец не имеет доступа к чужому аккаунту")
 
 
 @router.get("", response_model=List[LotResponse])

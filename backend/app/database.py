@@ -35,6 +35,7 @@ async def init_db() -> None:
         from app.models.account import FanpayAccount
         from app.models.permission import ManagerPermission
         from app.models.lot import LotSettings
+        from app.models.lot_template import LotTemplate
         from app.models.delivery import AutoDeliveryItem
         from app.models.review import AutoReviewTemplate
         from app.models.competitor import CompetitorBlacklist
@@ -48,6 +49,17 @@ async def init_db() -> None:
         try:
             await conn.execute(text("ALTER TABLE fanpay_accounts ADD COLUMN IF NOT EXISTS ip_address VARCHAR(255)"))
             await conn.execute(text("ALTER TABLE fanpay_accounts ADD COLUMN IF NOT EXISTS geo_location VARCHAR(255)"))
+            
+            # Добавляем колонки кэша и времени синхронизации
+            try:
+                await conn.execute(text("ALTER TABLE fanpay_accounts ADD COLUMN last_synced TIMESTAMP"))
+            except Exception:
+                pass # Колонка уже существует
+                
+            try:
+                await conn.execute(text("ALTER TABLE fanpay_accounts ADD COLUMN lots_cache JSON"))
+            except Exception:
+                pass # Колонка уже существует
         except Exception as e:
             import logging
-            logging.getLogger("fanpay.db").error(f"Ошибка при ALTER TABLE для гео-данных: {e}")
+            logging.getLogger("fanpay.db").error(f"Ошибка при ALTER TABLE для гео-данных/синхронизации: {e}")

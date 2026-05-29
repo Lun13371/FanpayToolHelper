@@ -771,3 +771,276 @@ class FanpayClient:
             except Exception as e:
                 logger.error(f"Исключение при парсинге лотов из профиля Funpay: {str(e)}")
                 return lots
+
+    async def get_chats(self) -> List[Dict[str, Any]]:
+        """
+        Парсит страницу диалогов https://funpay.com/chat/ и возвращает список активных чатов.
+        """
+        async with self._get_client() as client:
+            try:
+                response = await client.get("https://funpay.com/chat/")
+                if response.status_code != 200:
+                    logger.error(f"Не удалось открыть страницу чатов. Код: {response.status_code}")
+                    return []
+
+                soup = BeautifulSoup(response.text, "html.parser")
+                contact_items = soup.find_all("a", class_=re.compile(r"contact-item", re.I))
+                
+                chats = []
+                for item in contact_items:
+                    node_id = item.get("data-id")
+                    if not node_id:
+                        href = item.get("href", "")
+                        node_match = re.search(r"node=(\d+)", href)
+                        if node_match:
+                            node_id = node_match.group(1)
+                    
+                    if not node_id:
+                        continue
+
+                    # Никнейм
+                    name_el = item.find(class_=re.compile(r"contact-item-name|media-heading", re.I))
+                    username = name_el.text.strip() if name_el else "Пользователь"
+
+                    # Аватар
+                    avatar_el = item.find(class_=re.compile(r"avatar|contact-item-avatar", re.I))
+                    avatar_url = None
+                    if avatar_el and avatar_el.has_attr("style"):
+                        style = avatar_el["style"]
+                        url_match = re.search(r"url\(['\"]?(.*?)['\"]?\)", style)
+                        if url_match:
+                            avatar_url = url_match.group(1)
+                    
+                    # Последнее сообщение
+                    msg_el = item.find(class_=re.compile(r"contact-item-msg|contact-item-text", re.I))
+                    last_message = msg_el.text.strip() if msg_el else ""
+                    last_message = re.sub(r'\s+', ' ', last_message)
+
+                    # Непрочитанные
+                    is_unread = "unread" in item.get("class", [])
+                    unread_count = 0
+                    counter_el = item.find(class_=re.compile(r"contact-item-counter|badge", re.I))
+                    if counter_el:
+                        try:
+                            unread_count = int(re.sub(r"\D", "", counter_el.text))
+                            is_unread = True
+                        except:
+                            is_unread = True
+                            unread_count = 1
+
+                    chats.append({
+                        "node_id": node_id,
+                        "username": username,
+                        "avatar_url": avatar_url,
+                        "last_message": last_message,
+                        "is_unread": is_unread,
+                        "unread_count": unread_count
+                    })
+                return chats
+            except Exception as e:
+                logger.error(f"Ошибка парсинга списка чатов Funpay: {e}")
+                return []
+
+    async def get_chat_messages(self, node_id: str) -> List[Dict[str, Any]]:
+        """
+        Загружает историю сообщений конкретного чата по node_id.
+        """
+        async with self._get_client() as client:
+            try:
+                response = await client.get(f"https://funpay.com/chat/?node={node_id}")
+                if response.status_code != 200:
+                    logger.error(f"Не удалось открыть чат {node_id}. Код: {response.status_code}")
+                    return []
+
+                soup = BeautifulSoup(response.text, "html.parser")
+                msg_blocks = soup.find_all(class_=re.compile(r"chat-msg", re.I))
+                
+                messages = []
+                for msg in msg_blocks:
+                    # Имя автора сообщения
+                    author_div = msg.find(class_=re.compile(r"chat-msg-author", re.I))
+                    author = author_div.text.strip() if author_div else "Система"
+                    
+                    # Текст сообщения
+                    text_div = msg.find(class_=re.compile(r"chat-msg-text", re.I))
+                    if not text_div:
+                        continue
+                    text = text_div.text.strip()
+
+                    # Время сообщения
+                    time_div = msg.find(class_=re.compile(r"chat-msg-date|chat-msg-time", re.I))
+                    time_str = time_div.text.strip() if time_div else ""
+
+                    is_me = "chat-msg-mine" in msg.get("class", []) or author.lower() in ["я", "вы"]
+                    
+                    messages.append({
+                        "author": author,
+                        "text": text,
+                        "is_me": is_me,
+                        "time": time_str
+                    })
+                return messages
+            except Exception as e:
+                logger.error(f"Ошибка получения сообщений из чата {node_id}: {e}")
+                return []
+
+    async def get_lot_details(self, lot_id: str) -> Dict[str, Any]:
+        """
+        Загружает страницу редактирования лота, парсит все поля формы и извлекает:
+        - Текущую цену и количество.
+        - Состояние встроенной автовыдачи FunPay (активна ли, какой текст загружен).
+        - Полный словарь полей формы для последующего сохранения.
+        """
+        async with self._get_client() as client:
+            try:
+                edit_url = f"https://funpay.com/lots/edit?id={lot_id}"
+                response = await client.get(edit_url)
+                if response.status_code != 200:
+                    logger.error(f"Не удалось открыть страницу редактирования лота {lot_id}. Код: {response.status_code}")
+                    return {}
+
+                html = response.text
+                soup = BeautifulSoup(html, "html.parser")
+                form = soup.find("form", action=re.compile(r"/lots/save"))
+                if not form:
+                    logger.error(f"Форма редактирования лота {lot_id} не найдена.")
+                    return {}
+
+                fields = {}
+                # Парсим все поля ввода
+                for inp in form.find_all(["input", "select", "textarea"]):
+                    name = inp.get("name")
+                    if not name:
+                        continue
+                    
+                    val = inp.get("value", "")
+                    
+                    # Особая обработка для чекбоксов
+                    if inp.name == "input" and inp.get("type") == "checkbox":
+                        if inp.has_attr("checked"):
+                            fields[name] = val or "1"
+                        continue
+                    
+                    # Особая обработка для textarea (текст лежит внутри тега)
+                    if inp.name == "textarea":
+                        val = inp.text
+                    
+                    fields[name] = val
+
+                # Выделяем нужные параметры
+                price = float(fields.get("price", "0").replace(",", ".")) if "price" in fields else 0.0
+                amount = int(fields.get("amount", "1")) if "amount" in fields else 1
+
+                # Находим поля родной автовыдачи
+                native_auto_delivery_enabled = False
+                native_auto_delivery_text = ""
+                
+                # Ищем поле галочки автовыдачи (обычно 'auto_delivery')
+                auto_deliv_key = None
+                for k in fields.keys():
+                    if "auto_delivery" in k and k != "auto_delivery_text":
+                        auto_deliv_key = k
+                        break
+                
+                if auto_deliv_key and fields.get(auto_deliv_key):
+                    native_auto_delivery_enabled = True
+
+                # Ищем поле текста автовыдачи (обычно 'auto_delivery_text')
+                text_key = "auto_delivery_text" if "auto_delivery_text" in fields else None
+                if not text_key:
+                    for k in fields.keys():
+                        if "auto_delivery" in k and "text" in k:
+                            text_key = k
+                            break
+                
+                if text_key:
+                    native_auto_delivery_text = fields.get(text_key, "")
+
+                return {
+                    "lot_id": lot_id,
+                    "price": price,
+                    "amount": amount,
+                    "native_auto_delivery_enabled": native_auto_delivery_enabled,
+                    "native_auto_delivery_text": native_auto_delivery_text,
+                    "fields": fields
+                }
+            except Exception as e:
+                logger.error(f"Исключение при извлечении деталей лота {lot_id}: {e}")
+                return {}
+
+    async def save_lot_settings(
+        self, 
+        lot_id: str, 
+        fields: Dict[str, Any], 
+        price: Optional[float] = None, 
+        native_auto_delivery_enabled: Optional[bool] = None, 
+        native_auto_delivery_text: Optional[str] = None
+    ) -> bool:
+        """
+        Сохраняет лот на FunPay, используя базовые поля формы и внося в них нужные изменения.
+        """
+        async with self._get_client() as client:
+            try:
+                # 1. Загружаем страницу еще раз для актуального CSRF токена
+                edit_url = f"https://funpay.com/lots/edit?id={lot_id}"
+                response = await client.get(edit_url)
+                if response.status_code != 200:
+                    return False
+
+                csrf_token = self._extract_csrf_token(response.text)
+                if not csrf_token:
+                    logger.error("Не удалось извлечь CSRF токен для сохранения лота.")
+                    return False
+
+                # Копируем словарь полей
+                payload = fields.copy()
+                payload["csrf_token"] = csrf_token
+
+                # 2. Применяем новые параметры, если они переданы
+                if price is not None:
+                    payload["price"] = f"{price:.2f}"
+                
+                # Настройка родной автовыдачи
+                auto_deliv_key = "auto_delivery"
+                for k in payload.keys():
+                    if "auto_delivery" in k and k != "auto_delivery_text":
+                        auto_deliv_key = k
+                        break
+
+                if native_auto_delivery_enabled is not None:
+                    if native_auto_delivery_enabled:
+                        payload[auto_deliv_key] = "1"
+                    else:
+                        payload.pop(auto_deliv_key, None)
+
+                if native_auto_delivery_text is not None:
+                    text_key = "auto_delivery_text" if "auto_delivery_text" in payload else None
+                    if not text_key:
+                        for k in payload.keys():
+                            if "auto_delivery" in k and "text" in k:
+                                text_key = k
+                                break
+                    if not text_key:
+                        text_key = "auto_delivery_text"
+                    payload[text_key] = native_auto_delivery_text
+
+                # 3. Отправляем запрос на сохранение
+                save_url = "https://funpay.com/lots/save"
+                headers = {
+                    "Content-Type": "application/x-www-form-urlencoded",
+                    "X-Requested-With": "XMLHttpRequest"
+                }
+
+                save_res = await client.post(save_url, data=payload, headers=headers)
+                if save_res.status_code == 200:
+                    try:
+                        res_json = save_res.json()
+                        return "error" not in res_json
+                    except:
+                        return "ошибка" not in save_res.text.lower()
+                
+                return False
+            except Exception as e:
+                logger.error(f"Исключение при сохранении настроек лота {lot_id}: {e}")
+                return False
+

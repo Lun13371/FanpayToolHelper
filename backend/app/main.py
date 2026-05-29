@@ -7,6 +7,8 @@ from app.services.scheduler import scheduler_manager
 from app.api.auth import router as auth_router
 from app.api.accounts import router as accounts_router
 from app.api.lots import router as lots_router
+from app.api.lot_templates import router as templates_router
+from app.api.chats import router as chats_router
 from app.api.delivery import router as delivery_router
 from app.api.ai_keys import router as ai_keys_router
 from app.api.logs import router as logs_router
@@ -41,6 +43,8 @@ app.add_middleware(
 app.include_router(auth_router, prefix="/api/v1")
 app.include_router(accounts_router, prefix="/api/v1")
 app.include_router(lots_router, prefix="/api/v1")
+app.include_router(templates_router, prefix="/api/v1")
+app.include_router(chats_router, prefix="/api/v1")
 app.include_router(delivery_router, prefix="/api/v1")
 app.include_router(ai_keys_router, prefix="/api/v1")
 app.include_router(logs_router) # Роутер логов содержит WebSockets, подключаем напрямую

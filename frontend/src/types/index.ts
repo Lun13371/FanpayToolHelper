@@ -20,6 +20,19 @@ export interface FanpayAccount {
   rating?: number;
   reviews_count?: number;
   last_raised?: string;
+  last_synced?: string;
+  telegram_chat_id?: string;
+  lots_cache?: any[];
+  created_at: string;
+}
+
+export interface LotTemplate {
+  id: number;
+  user_id: number;
+  name: string;
+  min_price: number;
+  undercut_value: number;
+  is_active: boolean;
   created_at: string;
 }
 

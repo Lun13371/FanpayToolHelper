@@ -9,7 +9,7 @@ from app.database import get_session
 from app.api.deps import get_current_user
 from app.models.user import User, UserRole
 from app.models.log import SystemLogs
-from app.api.lots import verify_account_access
+from app.api.accounts import verify_account_access
 from app.services.log_broadcast import log_broadcast_manager
 
 router = APIRouter(tags=["Логи ботов"])

@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react';
+import { createContext, useContext, useState, useEffect, ReactNode } from 'react';
 import { User, FanpayAccount } from '../types';
 
 export const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
@@ -8,12 +8,12 @@ interface AppContextType {
   user: User | null;
   accounts: FanpayAccount[];
   selectedAccountId: number | null;
-  activeTab: 'dashboard' | 'delivery' | 'dumping' | 'manager' | 'ai-keys' | 'admin';
+  activeTab: 'dashboard' | 'delivery' | 'dumping' | 'manager' | 'templates' | 'ai-keys' | 'admin';
   setToken: (token: string | null) => void;
   setUser: (user: User | null) => void;
   setAccounts: (accounts: FanpayAccount[]) => void;
   setSelectedAccountId: (id: number | null) => void;
-  setActiveTab: (tab: 'dashboard' | 'delivery' | 'dumping' | 'manager' | 'ai-keys' | 'admin') => void;
+  setActiveTab: (tab: 'dashboard' | 'delivery' | 'dumping' | 'manager' | 'templates' | 'ai-keys' | 'admin') => void;
   fetchAccounts: () => Promise<void>;
   logout: () => void;
 }
@@ -25,7 +25,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
   const [user, setUser] = useState<User | null>(null);
   const [accounts, setAccounts] = useState<FanpayAccount[]>([]);
   const [selectedAccountId, setSelectedAccountId] = useState<number | null>(null);
-  const [activeTab, setActiveTab] = useState<'dashboard' | 'delivery' | 'dumping' | 'manager' | 'ai-keys' | 'admin'>('dashboard');
+  const [activeTab, setActiveTab] = useState<'dashboard' | 'delivery' | 'dumping' | 'manager' | 'templates' | 'ai-keys' | 'admin'>('dashboard');
 
   const fetchMe = async () => {
     if (!token) return;

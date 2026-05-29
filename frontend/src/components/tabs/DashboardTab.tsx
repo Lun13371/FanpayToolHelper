@@ -6,7 +6,7 @@ import { handleMouseMove } from '../../utils/mouseTracker';
 import { LogMessage } from '../../types';
 
 export default function DashboardTab() {
-  const { token, user, accounts, fetchAccounts, selectedAccountId, setSelectedAccountId } = useAppContext();
+  const { token, user, accounts, fetchAccounts, selectedAccountId, setSelectedAccountId, setActiveTab } = useAppContext();
   
   const [accountForm, setAccountForm] = useState({ name: '', golden_key: '', proxy_url: '', telegram_chat_id: '' });
   const [loading, setLoading] = useState(false);
@@ -289,7 +289,10 @@ export default function DashboardTab() {
                         ? 'bg-white/5 border-white/10' 
                         : 'bg-slate-950/20 border-white/5 hover:border-white/10'
                     }`}
-                    onClick={() => setSelectedAccountId(acc.id)}
+                    onClick={() => {
+                      setSelectedAccountId(acc.id);
+                      setActiveTab('manager');
+                    }}
                   >
                     <div className="flex items-center gap-3">
                       <div className="w-9 h-9 rounded-full bg-gradient-to-tr from-brand-cyan/20 to-brand-blue/20 flex items-center justify-center shrink-0">

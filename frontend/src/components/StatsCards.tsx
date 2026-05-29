@@ -1,4 +1,3 @@
-import React from 'react';
 import { motion } from 'framer-motion';
 import { Radio, Key, Server } from 'lucide-react';
 import { useAppContext } from '../context/AppContext';
