@@ -1,0 +1,53 @@
+from typing import AsyncGenerator
+from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
+from sqlalchemy.orm import sessionmaker
+from sqlmodel import SQLModel
+from app.config import settings
+
+# Инициализируем асинхронный движок SQLAlchemy через SQLModel
+# echo=False для продакшена, чтобы не засорять логи SQL-запросами
+engine = create_async_engine(
+    settings.DATABASE_URL,
+    echo=False,
+    future=True,
+    pool_size=20,
+    max_overflow=10,
+    pool_recycle=3600
+)
+
+# Фабрика асинхронных сессий
+async_session_maker = sessionmaker(
+    engine,
+    class_=AsyncSession,
+    expire_on_commit=False
+)
+
+# Асинхронный генератор сессий для эндпоинтов FastAPI (FastAPI Depend)
+async def get_session() -> AsyncGenerator[AsyncSession, None]:
+    async with async_session_maker() as session:
+        yield session
+
+# Функция для автоматического создания таблиц (при первом запуске без Alembic)
+async def init_db() -> None:
+    async with engine.begin() as conn:
+        # Импортируем все модели перед созданием, чтобы SQLModel знал о них
+        from app.models.user import User
+        from app.models.account import FanpayAccount
+        from app.models.permission import ManagerPermission
+        from app.models.lot import LotSettings
+        from app.models.delivery import AutoDeliveryItem
+        from app.models.review import AutoReviewTemplate
+        from app.models.competitor import CompetitorBlacklist
+        from app.models.ai_key import AIKey
+        from app.models.log import SystemLogs
+
+        await conn.run_sync(SQLModel.metadata.create_all)
+        
+        # Добавляем колонки динамически, если таблица уже существует
+        from sqlalchemy import text
+        try:
+            await conn.execute(text("ALTER TABLE fanpay_accounts ADD COLUMN IF NOT EXISTS ip_address VARCHAR(255)"))
+            await conn.execute(text("ALTER TABLE fanpay_accounts ADD COLUMN IF NOT EXISTS geo_location VARCHAR(255)"))
+        except Exception as e:
+            import logging
+            logging.getLogger("fanpay.db").error(f"Ошибка при ALTER TABLE для гео-данных: {e}")

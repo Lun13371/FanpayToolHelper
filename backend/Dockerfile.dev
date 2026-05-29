@@ -1,0 +1,19 @@
+FROM python:3.11-slim
+
+# Отключаем создание pyc файлов и буферизируем логи
+ENV PYTHONDONTWRITEBYTECODE 1
+ENV PYTHONUNBUFFERED 1
+
+WORKDIR /app
+
+# Устанавливаем системные зависимости, если необходимы
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    postgresql-client \
+    && rm -rf /var/lib/apt/lists/*
+
+# Копируем и устанавливаем зависимости Python
+COPY requirements.txt .
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir -r requirements.txt
+
+EXPOSE 8000

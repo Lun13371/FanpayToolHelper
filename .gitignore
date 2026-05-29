@@ -1,0 +1,46 @@
+# Environment files
+.env
+.env.local
+.env.*.local
+!.env.example
+
+# IDEs and Editors
+.vscode/
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.swp
+*.sublime-project
+*.sublime-workspace
+
+# OS files
+.DS_Store
+Thumbs.db
+db.files
+desktop.ini
+
+# Python files
+**/__pycache__/
+**/*.pyc
+**/*.pyo
+**/*.pyd
+**/.pytest_cache/
+**/.venv/
+**/venv/
+**/env/
+**/.mypy_cache/
+
+# Node.js and Frontend
+**/node_modules/
+**/dist/
+**/build/
+**/*.tsbuildinfo
+**/vite.config.ts.timestamp-*
+
+# Logs and databases
+**/logs/
+**/*.log
+**/*.db
+**/*.sqlite3

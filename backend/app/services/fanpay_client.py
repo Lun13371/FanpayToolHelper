@@ -1,0 +1,773 @@
+import logging
+import re
+import json
+from typing import List, Optional, Tuple, Dict, Any
+from bs4 import BeautifulSoup
+import httpx
+
+logger = logging.getLogger("fanpay.client")
+
+class FanpayClient:
+    """
+    Низкоуровневый клиент для взаимодействия с API и веб-версией Funpay.
+    Использует HTTPX для асинхронных запросов через резидентные прокси и с куками пользователя.
+    """
+    def __init__(
+        self, 
+        golden_key: str, 
+        proxy_url: str, 
+        user_agent: Optional[str] = None,
+        cookies: Optional[Dict[str, Any]] = None
+    ):
+        self.golden_key = golden_key
+        self.proxy_url = proxy_url
+        self.user_agent = user_agent or "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:125.0) Gecko/20100101 Firefox/125.0"
+        self.cookies = cookies or {}
+        
+        # Обязательно вшиваем golden_key в куки
+        self.cookies["golden_key"] = golden_key
+
+    def _get_client(self) -> httpx.AsyncClient:
+        """
+        Создает асинхронный HTTP-клиент с настроенными заголовками, прокси и куками.
+        """
+        # Настройка прокси (SOCKS5/HTTP)
+        proxy = self.proxy_url if self.proxy_url else None
+
+        headers = {
+            "User-Agent": self.user_agent,
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+            "Accept-Language": "ru-RU,ru;q=0.8,en-US;q=0.5,en;q=0.3",
+            "Referer": "https://funpay.com/"
+        }
+
+        # Конвертируем все значения кук в строки для HTTPX
+        cleaned_cookies = {k: str(v) for k, v in self.cookies.items()}
+
+        return httpx.AsyncClient(
+            proxy=proxy,
+            headers=headers,
+            cookies=cleaned_cookies,
+            timeout=15.0,
+            follow_redirects=True
+        )
+
+    def _extract_csrf_token(self, html: str) -> Optional[str]:
+        """
+        Парсит HTML-код и извлекает CSRF-токен из data-app-data, мета-тегов или атрибутов.
+        """
+        soup = BeautifulSoup(html, "html.parser")
+        
+        # 1. Извлекаем из data-app-data в теге body (самый точный способ)
+        body = soup.find("body")
+        if body and body.has_attr("data-app-data"):
+            try:
+                app_data = json.loads(body.get("data-app-data"))
+                if "csrf-token" in app_data:
+                    return str(app_data["csrf-token"])
+                if "csrf_token" in app_data:
+                    return str(app_data["csrf_token"])
+            except:
+                pass
+
+        # 2. Ищем в <html data-csrf-token="...">
+        html_tag = soup.find("html")
+        if html_tag and html_tag.has_attr("data-csrf-token"):
+            return html_tag["data-csrf-token"]
+            
+        # 3. Ищем в input полях
+        csrf_input = soup.find("input", {"name": "csrf_token"})
+        if csrf_input and csrf_input.has_attr("value"):
+            return csrf_input["value"]
+            
+        # 4. Ищем регулярным выражением (буквенно-цифровой паттерн!)
+        match = re.search(r'csrf[_-]token\s*:\s*[\'"]([a-z0-9]+)[\'"]', html, re.IGNORECASE)
+        if match:
+            return match.group(1)
+            
+        return None
+
+    async def get_connection_ip_and_geo(self) -> Tuple[Optional[str], Optional[str]]:
+        """
+        Запрашивает внешний IP и гео-позицию через текущее подключение (используя прокси, если задан).
+        """
+        async with self._get_client() as client:
+            try:
+                # ip-api.com работает бесплатно без ключей и возвращает детальное гео
+                response = await client.get("http://ip-api.com/json/", timeout=8.0)
+                if response.status_code == 200:
+                    data = response.json()
+                    if data.get("status") == "success":
+                        ip = data.get("query")
+                        country = data.get("country", "")
+                        city = data.get("city", "")
+                        geo = f"{country}, {city}".strip(", ")
+                        return ip, geo
+            except Exception as e:
+                logger.error(f"Ошибка при определении внешнего IP/Гео: {e}")
+        return None, None
+
+    async def verify_session(self) -> Tuple[bool, str, Dict[str, Any]]:
+        """
+        Проверяет валидность сессии (golden_key).
+        Использует переданные куки. Если веб-сервер выдает 502 из-за конфликта кук,
+        автоматически сбрасывает их до чистого golden_key и повторяет запрос.
+        Возвращает (is_valid, username, updated_cookies).
+        """
+        async with self._get_client() as client:
+            try:
+                response = await client.get("https://funpay.com/")
+                
+                # Если получили 502, значит старые куки конфликтуют. Сбрасываем и повторяем!
+                if response.status_code == 502:
+                    logger.warning("verify_session: получили код 502. Пробуем сбросить куки до чистого golden_key.")
+                    self.cookies = {"golden_key": self.golden_key}
+                    async with self._get_client() as fallback_client:
+                        response = await fallback_client.get("https://funpay.com/")
+                
+                if response.status_code != 200:
+                    return False, f"HTTP Error {response.status_code}", {}
+
+                html = response.text
+                # Если в HTML есть ссылка на выход (в любой локали) или юзер-бар, сессия валидна
+                if "logout" not in html.lower() and "user-link-name" not in html:
+                    return False, "Not Authorized (No logout link)", {}
+
+                # Парсим имя пользователя
+                soup = BeautifulSoup(html, "html.parser")
+                user_link = soup.find("a", href=re.compile(r"/users/\d+/"))
+                username = "Unknown"
+                if user_link:
+                    # Имя обычно внутри блока с классом user-link-name
+                    name_span = user_link.find(class_="user-link-name")
+                    username = name_span.text.strip() if name_span else user_link.text.strip()
+
+                # Обновляем сохраненные куки без вызова конфликта дубликатов (например, PHPSESSID)
+                current_cookies = {}
+                for cookie in client.cookies.jar:
+                    current_cookies[cookie.name] = cookie.value
+                # Обязательно сохраняем и сам golden_key в куках
+                current_cookies["golden_key"] = self.golden_key
+                self.cookies = current_cookies
+                return True, username, current_cookies
+
+            except Exception as e:
+                logger.error(f"Ошибка при верификации сессии Funpay: {str(e)}")
+                return False, f"Connection error: {str(e)}", {}
+
+    async def raise_offers(self) -> Tuple[bool, str]:
+        """
+        Парсит лоты из публичного профиля, находит их подразделы (/trade) и отправляет запросы на поднятие.
+        """
+        async with self._get_client() as client:
+            try:
+                # 1. Загружаем главную страницу для извлечения ID пользователя и CSRF-токена
+                main_resp = await client.get("https://funpay.com/")
+                if main_resp.status_code != 200:
+                    return False, f"Не удалось загрузить главную страницу. Код: {main_resp.status_code}"
+                
+                csrf_token = self._extract_csrf_token(main_resp.text)
+                if not csrf_token:
+                    return False, "Не удалось извлечь CSRF токен для автоподнятия"
+
+                soup_main = BeautifulSoup(main_resp.text, "html.parser")
+                body = soup_main.find("body")
+                user_id = None
+                if body and body.has_attr("data-app-data"):
+                    try:
+                        app_data = json.loads(body.get("data-app-data"))
+                        user_id = str(app_data.get("userId"))
+                    except:
+                        pass
+                
+                if not user_id:
+                    user_id = "20052933" # Дефолтный ID
+                
+                # 2. Получаем активные лоты из публичного профиля
+                profile_url = f"https://funpay.com/users/{user_id}/"
+                profile_resp = await client.get(profile_url)
+                if profile_resp.status_code != 200:
+                    return False, f"Не удалось получить профиль пользователя. Код: {profile_resp.status_code}"
+                
+                soup_prof = BeautifulSoup(profile_resp.text, "html.parser")
+                rows = soup_prof.find_all("a", class_="tc-item")
+                if not rows:
+                    return True, "У вас нет активных лотов для поднятия."
+                
+                # Собираем уникальные lot_id
+                lot_ids = []
+                for row in rows:
+                    href = row.get("href", "")
+                    lot_id_match = re.search(r"id=(\d+)", href)
+                    if lot_id_match:
+                        lot_ids.append(lot_id_match.group(1))
+                
+                # 3. Для каждого лота находим node_id со страницы редактирования
+                # Группируем по уникальным node_id, чтобы не отправлять лишние запросы
+                raised_categories = []
+                processed_nodes = set()
+                
+                for lot_id in lot_ids[:5]: # Ограничим первыми 5 лотами для безопасности и скорости
+                    edit_url = f"https://funpay.com/lots/offerEdit?offer={lot_id}"
+                    edit_resp = await client.get(edit_url)
+                    if edit_resp.status_code != 200:
+                        continue
+                    
+                    soup_edit = BeautifulSoup(edit_resp.text, "html.parser")
+                    node_input = soup_edit.find("input", {"name": "node_id"})
+                    node_id = node_input.get("value") if node_input else None
+                    
+                    if not node_id or node_id in processed_nodes:
+                        continue
+                    
+                    processed_nodes.add(node_id)
+                    
+                    # 4. Загружаем страницу раздела /trade для получения game_id и актуальной кнопки поднятия
+                    trade_url = f"https://funpay.com/lots/{node_id}/trade"
+                    trade_resp = await client.get(trade_url)
+                    if trade_resp.status_code != 200:
+                        continue
+                    
+                    soup_trade = BeautifulSoup(trade_resp.text, "html.parser")
+                    btn_raise = soup_trade.find("button", class_=re.compile(r"raise", re.I)) or soup_trade.find(class_=re.compile(r"raise", re.I))
+                    
+                    if btn_raise:
+                        game_id = btn_raise.get("data-game")
+                        node_id_from_btn = btn_raise.get("data-node") or node_id
+                        category_name = btn_raise.text.strip().replace("\n", " ") or f"Раздел {node_id}"
+                        # Очищаем лишние пробелы в названии категории
+                        category_name = re.sub(r'\s+', ' ', category_name).strip()
+                        
+                        if game_id and node_id_from_btn:
+                            # 5. Выполняем POST запрос на поднятие лотов
+                            raise_url = "https://funpay.com/lots/raise"
+                            payload = {
+                                "game_id": game_id,
+                                "node_id": node_id_from_btn,
+                                "csrf_token": csrf_token
+                            }
+                            headers = {
+                                "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+                                "X-Requested-With": "XMLHttpRequest"
+                            }
+                            
+                            raise_res = await client.post(raise_url, data=payload, headers=headers)
+                            if raise_res.status_code == 200:
+                                res_json = raise_res.json()
+                                if res_json.get("success", False):
+                                    raised_categories.append(category_name)
+                                else:
+                                    msg = res_json.get("desc", "Кулдаун")
+                                    logger.info(f"Категория {category_name} не поднята: {msg}")
+                
+                if raised_categories:
+                    return True, f"Успешно подняты категории: {', '.join(raised_categories)}"
+                else:
+                    return True, "Все категории находятся в кулдауне поднятия или подняты ранее."
+                    
+            except Exception as e:
+                logger.error(f"Исключение при автоподнятии лотов: {str(e)}")
+                return False, f"Исключение: {str(e)}"
+
+    async def get_paid_orders(self) -> List[Dict[str, Any]]:
+        """
+        Парсит страницу продаж 'https://funpay.com/orders/trade' и находит оплаченные заказы,
+        которые требуют доставки товара.
+        """
+        async with self._get_client() as client:
+            try:
+                response = await client.get("https://funpay.com/orders/trade")
+                if response.status_code != 200:
+                    logger.error(f"Не удалось получить заказы. Код {response.status_code}")
+                    return []
+
+                soup = BeautifulSoup(response.text, "html.parser")
+                order_rows = soup.find_all("a", class_="tc-item")
+                
+                paid_orders = []
+                for row in order_rows:
+                    # Ищем статус заказа
+                    status_div = row.find(class_="tc-status")
+                    if not status_div:
+                        continue
+                    
+                    status_text = status_div.text.strip().lower()
+                    
+                    # На Funpay оплаченный заказ, ожидающий выдачи, имеет статус "оплачен" или "ожидает отправки"
+                    # В верстке это блок без класса tc-status-finished (который означает завершенный)
+                    # Обычно статус равен "оплачен" или "ожидает доставки"
+                    is_paid = "оплачен" in status_text or "доставки" in status_text or "отправки" in status_text
+
+                    if is_paid:
+                        # Извлекаем ID заказа
+                        id_div = row.find(class_="tc-order")
+                        order_id = id_div.text.strip() if id_div else None
+                        
+                        # Название лота
+                        title_div = row.find(class_="tc-title")
+                        lot_name = title_div.text.strip() if title_div else "Неизвестный лот"
+                        # Убираем лишние пробелы и переносы
+                        lot_name = re.sub(r'\s+', ' ', lot_name)
+
+                        # Имя покупателя
+                        buyer_div = row.find(class_="tc-user")
+                        buyer_name = buyer_div.text.strip() if buyer_div else "Покупатель"
+
+                        # Ссылка на заказ
+                        order_url = row.get("href") # Например https://funpay.com/orders/O-123456/
+                        
+                        # Сумма заказа
+                        price_div = row.find(class_="tc-price")
+                        price_text = price_div.text.strip() if price_div else "0"
+                        price = float(re.sub(r'[^\d.]', '', price_text.replace(",", ".")) or 0)
+
+                        paid_orders.append({
+                            "order_id": order_id,
+                            "lot_name": lot_name,
+                            "buyer_name": buyer_name,
+                            "order_url": order_url,
+                            "price": price
+                        })
+
+                return paid_orders
+
+            except Exception as e:
+                logger.error(f"Ошибка при парсинге оплаченных заказов: {str(e)}")
+                return []
+
+    async def get_chat_node_and_history(self, order_id: str) -> Tuple[Optional[str], List[Tuple[str, str]]]:
+        """
+        Загружает страницу заказа и извлекает:
+        1. ID чата (node) для переписки.
+        2. Последние 12 сообщений (отправитель 'buyer'/'seller', текст).
+        """
+        async with self._get_client() as client:
+            try:
+                # На Funpay ссылка на заказ имеет вид https://funpay.com/orders/O-XXXXXX/
+                url = f"https://funpay.com/orders/{order_id}/"
+                response = await client.get(url)
+                if response.status_code != 200:
+                    return None, []
+
+                html = response.text
+                soup = BeautifulSoup(html, "html.parser")
+
+                # Извлекаем node ID из формы чата. Чат на странице заказа обернут в форму
+                # Обычно <form class="chat-form" data-node="12345">
+                chat_form = soup.find("form", class_="chat-form")
+                node_id = None
+                if chat_form and chat_form.has_attr("data-node"):
+                    node_id = chat_form["data-node"]
+                else:
+                    # Попробуем найти через атрибуты контейнера сообщений
+                    chat_container = soup.find(class_="chat")
+                    if chat_container and chat_container.has_attr("data-node"):
+                        node_id = chat_container["data-node"]
+
+                if not node_id:
+                    # Попробуем regex в HTML
+                    match = re.search(r'data-node\s*=\s*[\'"](\d+)[\'"]', html)
+                    if match:
+                        node_id = match.group(1)
+
+                # Извлекаем сообщения чата
+                messages = []
+                # Сообщения лежат в блоках с классом chat-msg
+                msg_blocks = soup.find_all(class_="chat-msg")
+                
+                for msg in msg_blocks:
+                    # Имя автора сообщения
+                    author_div = msg.find(class_="chat-msg-author")
+                    if not author_div:
+                        continue
+                    
+                    author = author_div.text.strip().lower()
+                    
+                    # Текст сообщения
+                    text_div = msg.find(class_="chat-msg-text")
+                    if not text_div:
+                        continue
+                    text = text_div.text.strip()
+
+                    # Определяем роль
+                    # Если класс msg содержит 'chat-msg-state', это системное оповещение
+                    # Если имя автора совпадает со словом 'я' или 'вы' или 'seller', это продавец
+                    # Иначе - покупатель
+                    is_me = "chat-msg-mine" in msg.get("class", []) or author == "я" or author == "вы"
+                    role = "seller" if is_me else "buyer"
+                    
+                    messages.append((role, text))
+
+                # Возвращаем последние 12 сообщений
+                return node_id, messages[-12:]
+
+            except Exception as e:
+                logger.error(f"Ошибка при сборе чата для заказа {order_id}: {str(e)}")
+                return None, []
+
+    async def send_message(self, node_id: str, text: str) -> bool:
+        """
+        Отправляет текстовое сообщение в чат с указанным node_id.
+        """
+        async with self._get_client() as client:
+            try:
+                # Сначала нам нужно зайти в чат или на любую страницу, чтобы получить актуальный CSRF
+                # Или мы можем получить CSRF прямо из первого запроса, так как он обычно кэширован в сессии
+                chat_url = f"https://funpay.com/chat/?node={node_id}"
+                response = await client.get(chat_url)
+                if response.status_code != 200:
+                    return False
+
+                csrf_token = self._extract_csrf_token(response.text)
+                if not csrf_token:
+                    logger.error(f"Не удалось извлечь CSRF токен для отправки сообщения в ноду {node_id}")
+                    return False
+
+                # POST запрос на отправку сообщения
+                send_url = "https://funpay.com/chat/message" if "message" in response.text else "https://funpay.com/chat/"
+                
+                # На Funpay отправка сообщения обычно идет POST запросом на /chat/
+                # с параметрами node, content, csrf_token
+                payload = {
+                    "node": node_id,
+                    "content": text,
+                    "csrf_token": csrf_token
+                }
+                headers = {
+                    "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+                    "X-Requested-With": "XMLHttpRequest"
+                }
+
+                res = await client.post("https://funpay.com/chat/", data=payload, headers=headers)
+                if res.status_code == 200:
+                    return True
+                
+                # Попробуем альтернативный эндпоинт, если основной дал сбой
+                res_alt = await client.post("https://funpay.com/chat/message", data=payload, headers=headers)
+                return res_alt.status_code == 200
+
+            except Exception as e:
+                logger.error(f"Исключение при отправке сообщения в ноду {node_id}: {str(e)}")
+                return False
+
+    async def update_lot_price(self, lot_id: str, new_price: float) -> bool:
+        """
+        Переходит на страницу редактирования лота, парсит форму и обновляет цену.
+        """
+        async with self._get_client() as client:
+            try:
+                # 1. Загружаем страницу редактирования лота
+                edit_url = f"https://funpay.com/lots/edit?id={lot_id}"
+                response = await client.get(edit_url)
+                if response.status_code != 200:
+                    logger.error(f"Не удалось открыть лот {lot_id} для изменения цены.")
+                    return False
+
+                html = response.text
+                csrf_token = self._extract_csrf_token(html)
+                if not csrf_token:
+                    return False
+
+                soup = BeautifulSoup(html, "html.parser")
+                
+                # Нам нужно спарсить ВСЕ скрытые поля формы редактирования, чтобы отправить их обратно.
+                # Funpay валидирует все поля, поэтому просто отправить ID и цену нельзя.
+                form = soup.find("form", action=re.compile(r"/lots/save"))
+                if not form:
+                    logger.error(f"Форма сохранения лота не найдена на странице для лота {lot_id}")
+                    return False
+
+                payload = {}
+                # Извлекаем все <input>, <select>, <textarea>
+                for inp in form.find_all(["input", "select", "textarea"]):
+                    name = inp.get("name")
+                    if not name:
+                        continue
+                    
+                    val = inp.get("value", "")
+                    
+                    # Если это чекбокс, проверяем checked
+                    if inp.name == "input" and inp.get("type") == "checkbox" and not inp.has_attr("checked"):
+                        continue
+                    
+                    payload[name] = val
+
+                # Модифицируем цену на новую
+                # Цена лота обычно находится в поле "price"
+                payload["price"] = f"{new_price:.2f}"
+                payload["csrf_token"] = csrf_token
+
+                # Отправляем форму сохранения
+                save_url = "https://funpay.com/lots/save"
+                headers = {
+                    "Content-Type": "application/x-www-form-urlencoded",
+                    "X-Requested-With": "XMLHttpRequest"
+                }
+
+                save_res = await client.post(save_url, data=payload, headers=headers)
+                if save_res.status_code == 200:
+                    # Проверяем ответ
+                    try:
+                        res_json = save_res.json()
+                        # Если возвращается json с редиректом или успехом, то все отлично
+                        return "error" not in res_json
+                    except:
+                        # Если вернулся html, проверяем отсутствие ошибок в тексте
+                        return "ошибка" not in save_res.text.lower()
+                
+                return False
+
+            except Exception as e:
+                logger.error(f"Исключение при демпинге цены для лота {lot_id}: {str(e)}")
+                return False
+
+    async def leave_review(self, order_id: str, rating: int, text: str) -> bool:
+        """
+        Оставляет автоматический ответный отзыв покупателю.
+        """
+        async with self._get_client() as client:
+            try:
+                # На Funpay отзывы оставляются через страницу заказа или специальный эндпоинт
+                # GET https://funpay.com/orders/O-XXXXXX/
+                url = f"https://funpay.com/orders/{order_id}/"
+                response = await client.get(url)
+                if response.status_code != 200:
+                    return False
+
+                csrf_token = self._extract_csrf_token(response.text)
+                if not csrf_token:
+                    return False
+
+                # Формируем запрос на добавление отзыва
+                # Обычно это POST на /orders/review c параметрами order, rating (1-5), text, csrf_token
+                payload = {
+                    "order": order_id,
+                    "rating": str(rating),
+                    "text": text,
+                    "csrf_token": csrf_token
+                }
+                headers = {
+                    "Content-Type": "application/x-www-form-urlencoded",
+                    "X-Requested-With": "XMLHttpRequest"
+                }
+
+                res = await client.post("https://funpay.com/orders/review", data=payload, headers=headers)
+                return res.status_code == 200
+
+            except Exception as e:
+                logger.error(f"Ошибка при оставлении автоотзыва на заказ {order_id}: {str(e)}")
+                return False
+
+    async def sync_profile_and_stats(self) -> Dict[str, Any]:
+        """
+        Парсит главную страницу и страницу профиля пользователя на Funpay,
+        извлекая баланс, имя пользователя, ID и статистику отзывов/рейтинга.
+        Использует переданные куки, при ошибке 502 автоматически сбрасывает их до чистого golden_key.
+        """
+        async with self._get_client() as client:
+            stats = {
+                "funpay_user_id": None,
+                "balance": 0.0,
+                "rating": 0.0,
+                "reviews_count": 0,
+                "username": "Unknown"
+            }
+            try:
+                # 1. Загружаем главную для имени, ID и баланса
+                response = await client.get("https://funpay.com/")
+                
+                # Если получили 502, значит старые куки конфликтуют. Сбрасываем их и повторяем!
+                if response.status_code == 502:
+                    logger.warning("sync_profile_and_stats: получили код 502. Пробуем сбросить куки до чистого golden_key.")
+                    self.cookies = {"golden_key": self.golden_key}
+                    async with self._get_client() as fallback_client:
+                        response = await fallback_client.get("https://funpay.com/")
+
+                logger.info(f"Синхронизация профиля: статус главной страницы: {response.status_code}, длина: {len(response.text)}")
+                if response.status_code != 200:
+                    return stats
+
+                soup = BeautifulSoup(response.text, "html.parser")
+                
+                # Проверим авторизацию
+                if "/account/logout" not in response.text:
+                    logger.warning("Синхронизация профиля: сессия не авторизована (нет ссылки logout в HTML)")
+                    return stats
+
+                # Парсим никнейм из шапки (как в Cardinal)
+                username_el = soup.find("div", class_="user-link-name")
+                if username_el:
+                    stats["username"] = username_el.text.strip()
+                    logger.info(f"Синхронизация профиля: спарсили никнейм: {stats['username']}")
+
+                # Извлекаем собственный ID строго из data-app-data в теге body (самый точный способ в 2026 году!)
+                body = soup.find("body")
+                if body and body.has_attr("data-app-data"):
+                    try:
+                        app_data = json.loads(body.get("data-app-data"))
+                        stats["funpay_user_id"] = str(app_data.get("userId"))
+                        logger.info(f"Синхронизация профиля: спарсили userId из data-app-data: {stats['funpay_user_id']}")
+                    except Exception as e:
+                        logger.error(f"Не удалось распарсить data-app-data: {e}")
+
+                # Фаллбек извлечения ID, если data-app-data не спарсился
+                if not stats["funpay_user_id"]:
+                    user_bar = soup.find(class_="user-bar")
+                    user_link = user_bar.find("a", href=re.compile(r"/users/\d+/")) if user_bar else None
+                    if not user_link:
+                        user_link = soup.find("a", class_="avatar", href=re.compile(r"/users/\d+/"))
+                    if user_link:
+                        href = user_link.get("href", "")
+                        id_match = re.search(r"/users/(\d+)/", href)
+                        if id_match:
+                            stats["funpay_user_id"] = id_match.group(1)
+                            logger.info(f"Синхронизация профиля: фаллбек спарсил userId: {stats['funpay_user_id']}")
+
+                # Ищем баланс (по классу badge badge-balance как в Cardinal)
+                balance_span = soup.find("span", class_="badge badge-balance") or soup.find(class_="badge-balance")
+                if balance_span:
+                    try:
+                        balance_text = balance_span.text.strip()
+                        # Очищаем от валюты и пробелов: вытаскиваем только цифры, точки и запятые
+                        balance_clean = re.sub(r"[^\d.,]", "", balance_text).replace(",", ".")
+                        if balance_clean:
+                            stats["balance"] = float(balance_clean)
+                            logger.info(f"Синхронизация профиля: спарсили баланс: {stats['balance']}")
+                    except Exception as e:
+                        logger.error(f"Ошибка парсинга баланса: {e}")
+
+                # 2. Если есть ID пользователя, грузим профиль для рейтинга и отзывов
+                if stats["funpay_user_id"]:
+                    profile_url = f"https://funpay.com/users/{stats['funpay_user_id']}/"
+                    prof_resp = await client.get(profile_url)
+                    logger.info(f"Синхронизация профиля: URL {profile_url}, код ответа: {prof_resp.status_code}, длина ответа: {len(prof_resp.text)}")
+                    
+                    if prof_resp.status_code == 200:
+                        p_soup = BeautifulSoup(prof_resp.text, "html.parser")
+                        html_text = prof_resp.text
+                        
+                        # 1. Парсинг рейтинга (Оценка) через регулярный поиск "X из 5"
+                        rating_match = re.search(r"([\d.]+)\s+(?:из|out of)\s+5", html_text, re.IGNORECASE)
+                        if rating_match:
+                            try:
+                                stats["rating"] = float(rating_match.group(1))
+                                logger.info(f"Синхронизация профиля: спарсили рейтинг (из 5): {stats['rating']}")
+                            except ValueError:
+                                pass
+                        else:
+                            # Фаллбек: Ищем точечно в class="rating-mini" или "big-rating"
+                            rating_span = p_soup.find(class_="rating-mini") or p_soup.find(class_="big-rating")
+                            if rating_span:
+                                try:
+                                    r_val = re.sub(r"[^\d.]", "", rating_span.text.strip())
+                                    if r_val:
+                                        stats["rating"] = float(r_val)
+                                        logger.info(f"Синхронизация профиля: фаллбек спарсил рейтинг: {stats['rating']}")
+                                except ValueError:
+                                    pass
+
+                        # 2. Парсинг количества отзывов по ссылке #reviews
+                        reviews_link = p_soup.find("a", href=re.compile(r"#reviews"))
+                        if reviews_link:
+                            try:
+                                rev_text = re.sub(r"\D", "", reviews_link.text)
+                                if rev_text:
+                                    stats["reviews_count"] = int(rev_text)
+                                    logger.info(f"Синхронизация профиля: спарсили отзывы по ссылке #reviews: {stats['reviews_count']}")
+                            except ValueError:
+                                pass
+                        else:
+                            rev_text_match = re.search(r"(\d+)\s+(?:отзыв|отзывов|отзыва|review|reviews)", html_text, re.IGNORECASE)
+                            if rev_text_match:
+                                stats["reviews_count"] = int(rev_text_match.group(1))
+                                logger.info(f"Синхронизация профиля: фаллбек спарсили отзывы (regex): {stats['reviews_count']}")
+
+                return stats
+            except Exception as e:
+                logger.error(f"Исключение при синхронизации профиля Funpay: {str(e)}")
+                return stats
+
+    async def get_active_lots(self) -> List[Dict[str, Any]]:
+        """
+        Парсит лоты непосредственно со страницы публичного профиля пользователя на Funpay.
+        """
+        async with self._get_client() as client:
+            lots = []
+            try:
+                # 1. Сначала получим ID пользователя из главной страницы
+                main_resp = await client.get("https://funpay.com/")
+                user_id = None
+                if main_resp.status_code == 200:
+                    soup = BeautifulSoup(main_resp.text, "html.parser")
+                    body = soup.find("body")
+                    if body and body.has_attr("data-app-data"):
+                        try:
+                            app_data = json.loads(body.get("data-app-data"))
+                            user_id = str(app_data.get("userId"))
+                        except:
+                            pass
+                
+                if not user_id:
+                    user_id = "20052933" # Дефолтный ID, если не спарсился
+                    
+                profile_url = f"https://funpay.com/users/{user_id}/"
+                logger.info(f"Загрузка лотов из публичного профиля: {profile_url}")
+                profile_resp = await client.get(profile_url)
+                
+                if profile_resp.status_code == 200:
+                    soup = BeautifulSoup(profile_resp.text, "html.parser")
+                    rows = soup.find_all("a", class_="tc-item")
+                    logger.info(f"Парсинг профиля: найдено {len(rows)} лотов")
+                    
+                    for row in rows:
+                        href = row.get("href", "")
+                        lot_id_match = re.search(r"id=(\d+)", href)
+                        if not lot_id_match:
+                            continue
+                        lot_id = lot_id_match.group(1)
+                        
+                        desc_div = row.find(class_="tc-desc-text") or row.find(class_="tc-desc")
+                        lot_name = desc_div.text.strip() if desc_div else "Без названия"
+                        lot_name = re.sub(r'\s+', ' ', lot_name)
+                        
+                        price_val = 0.0
+                        price_div = row.find(class_="tc-price")
+                        if price_div:
+                            if price_div.has_attr("data-s"):
+                                price_val = float(price_div["data-s"])
+                            else:
+                                price_text = price_div.text.strip().replace(" ", "").replace(",", ".")
+                                price_match = re.search(r"([\d.]+)", price_text)
+                                if price_match:
+                                    price_val = float(price_match.group(1))
+                                    
+                        amount_val = 1
+                        amount_div = row.find(class_=re.compile(r"tc-amount", re.I))
+                        if amount_div:
+                            amount_text = amount_div.text.strip()
+                            amount_match = re.search(r"(\d+)", amount_text)
+                            if amount_match:
+                                amount_val = int(amount_match.group(1))
+                                
+                        category_name = "Другое"
+                        parent = row.find_parent(class_=re.compile(r"tc-subcategory|yours-offers|tc-wrapper|user-profile|container", re.I))
+                        if parent:
+                            hdr = parent.find(class_=re.compile(r"tc-header|tc-title|game-title|mb15|page-header", re.I))
+                            if hdr:
+                                category_name = hdr.text.strip()
+                        category_name = category_name.split("\n")[0].strip()
+
+                        lots.append({
+                            "lot_id": lot_id,
+                            "lot_name": lot_name,
+                            "price": price_val,
+                            "amount": amount_val,
+                            "category": category_name
+                        })
+                    return lots
+                else:
+                    logger.error(f"Не удалось загрузить публичный профиль: {profile_resp.status_code}")
+                    return []
+            except Exception as e:
+                logger.error(f"Исключение при парсинге лотов из профиля Funpay: {str(e)}")
+                return lots

@@ -1,0 +1,64 @@
+version: '3.8'
+
+services:
+  db:
+    image: postgres:15-alpine
+    container_name: fanpay_db_dev
+    restart: always
+    environment:
+      POSTGRES_USER: ${DB_USER:-fanpay_user}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-fanpay_pass_9d3091}
+      POSTGRES_DB: ${DB_NAME:-fanpay_helper}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data_dev:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-fanpay_user} -d ${DB_NAME:-fanpay_helper}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.dev
+    container_name: fanpay_backend_dev
+    restart: always
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "8000:8000"
+    environment:
+      - ENVIRONMENT=dev
+      - DATABASE_URL=postgresql+asyncpg://${DB_USER:-fanpay_user}:${DB_PASSWORD:-fanpay_pass_9d3091}@db:5432/${DB_NAME:-fanpay_helper}
+      - JWT_SECRET=${JWT_SECRET:-super_secret_jwt_key_9d3091}
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
+      - TELEGRAM_ADMIN_CHAT_ID=${TELEGRAM_ADMIN_CHAT_ID}
+      - PYTHONUNBUFFERED=1
+      - WATCHFILES_FORCE_POLLING=true
+    volumes:
+      - ./backend:/app
+    env_file:
+      - .env
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile.dev
+    container_name: fanpay_frontend_dev
+    restart: always
+    ports:
+      - "5173:5173"
+    environment:
+      - VITE_API_URL=http://localhost:8000
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    depends_on:
+      - backend
+
+volumes:
+  postgres_data_dev:

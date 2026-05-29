@@ -1,0 +1,588 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Apple & Google Premium - Fanpay Helper</title>
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Lucide Icons -->
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <!-- Google Font: Plus Jakarta Sans (Clean, elegant, used by premium tech companies) -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    fontFamily: {
+                        sans: ['"Plus Jakarta Sans"', 'sans-serif'],
+                    },
+                    colors: {
+                        premium: {
+                            bg: '#06070a', // Ultra-deep midnight slate
+                            card: 'rgba(20, 22, 31, 0.6)', // Translucent card background
+                            border: 'rgba(255, 255, 255, 0.05)', // Extremely fine border
+                            borderHover: 'rgba(255, 255, 255, 0.12)',
+                            blue: '#3b82f6', // Premium iOS blue
+                            indigo: '#6366f1', // Sleek accent
+                            emerald: '#10b981', // Muted green
+                            text: '#f3f4f6',
+                            muted: '#9ca3af'
+                        }
+                    }
+                }
+            }
+        }
+    </script>
+    <style>
+        body {
+            background-color: #06070a;
+            background-image: 
+                radial-gradient(circle at 10% 20%, rgba(59, 130, 246, 0.04) 0%, transparent 50%),
+                radial-gradient(circle at 90% 80%, rgba(99, 102, 241, 0.03) 0%, transparent 50%);
+            overflow-x: hidden;
+        }
+
+        /* Apple Glassmorphism Card (Simple, Premium, Ultra-clean, Flat and Stable) */
+        .premium-card {
+            position: relative;
+            background: rgba(18, 20, 29, 0.45);
+            backdrop-filter: blur(24px) saturate(140%);
+            -webkit-backdrop-filter: blur(24px) saturate(140%);
+            border: 1px solid rgba(255, 255, 255, 0.03);
+            /* Completely flat and stable for perfect click accuracy - NO 3D tilt! */
+            transform: translateY(var(--translate-y, 0px));
+            transition: border-color 0.3s ease-out,
+                        transform 0.3s cubic-bezier(0.16, 1, 0.3, 1),
+                        box-shadow 0.3s ease-out;
+            overflow: hidden;
+        }
+        
+        /* Interactive light glow following cursor under the glass card (very subtle) */
+        .premium-card::after {
+            content: "";
+            position: absolute;
+            inset: 0;
+            background: radial-gradient(
+                160px circle at var(--mouse-x, 0px) var(--mouse-y, 0px),
+                rgba(99, 102, 241, 0.04),
+                transparent 70%
+            );
+            pointer-events: none;
+            opacity: 0;
+            transition: opacity 0.3s ease-out;
+            z-index: 1;
+        }
+        
+        /* Thin border glow exactly at cursor coordinates */
+        .premium-card::before {
+            content: "";
+            position: absolute;
+            inset: 0;
+            border-radius: inherit;
+            padding: 1px;
+            background: radial-gradient(
+                120px circle at var(--mouse-x, 0px) var(--mouse-y, 0px),
+                rgba(59, 130, 246, 0.25),
+                transparent 60%
+            );
+            -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+            mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+            -webkit-mask-composite: xor;
+            mask-composite: exclude;
+            pointer-events: none;
+            opacity: 0;
+            transition: opacity 0.3s ease-out;
+            z-index: 2;
+        }
+
+        .premium-card:hover::after, .premium-card:hover::before {
+            opacity: 1;
+        }
+
+        /* Subtle depth elevation on hover, perfectly flat */
+        .premium-card:hover {
+            border-color: rgba(6, 182, 212, 0.25); /* Elegant cyan glowing border on hover */
+            background: rgba(22, 25, 36, 0.65); /* Micro-lighten card background under glass */
+            /* ZERO physical translation/movement! Completely static for perfect click accuracy */
+            box-shadow: 
+                0 16px 35px rgba(0, 0, 0, 0.55),
+                0 0 1px rgba(255, 255, 255, 0.12) inset;
+        }
+
+        /* Hide scrollbars for responsive horizontal swipe navigation on mobile phones */
+        .no-scrollbar::-webkit-scrollbar {
+            display: none;
+        }
+        .no-scrollbar {
+            -ms-overflow-style: none;
+            scrollbar-width: none;
+        }
+
+        /* Fluid Switch (iOS physical-feel with scale spring bounce) */
+        .ios-switch-toggle {
+            transition: transform 0.2s cubic-bezier(0.16, 1, 0.3, 1),
+                        background-color 0.2s ease-out,
+                        border-color 0.2s ease-out;
+        }
+        .ios-switch-toggle:hover {
+            transform: translateY(-0.5px);
+        }
+
+        /* Clean circular indicators */
+        .indicator-glow-green {
+            box-shadow: 0 0 8px rgba(16, 185, 129, 0.4);
+        }
+        .indicator-glow-blue {
+            box-shadow: 0 0 8px rgba(59, 130, 246, 0.4);
+        }
+
+        /* 1. Header Entrance: Slide down gently */
+        @keyframes headerSlideDown {
+            0% {
+                opacity: 0;
+                transform: translateY(-16px);
+            }
+            100% {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+        .animate-header {
+            opacity: 0;
+            animation: headerSlideDown 0.8s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+        }
+
+        /* 2. Stats Cards: Springy Scale Pop with translateY */
+        @keyframes statPop {
+            0% {
+                opacity: 0;
+                transform: scale(0.94) translateY(8px);
+            }
+            70% {
+                transform: scale(1.01) translateY(-1px);
+            }
+            100% {
+                opacity: 1;
+                transform: scale(1) translateY(0);
+            }
+        }
+        .animate-stat {
+            opacity: 0;
+            animation: statPop 0.8s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+        }
+
+        /* 3. Left Panel: Sleek Slide Up */
+        @keyframes panelSlideUp {
+            0% {
+                opacity: 0;
+                transform: translateY(20px);
+            }
+            100% {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+        .animate-panel-left {
+            opacity: 0;
+            animation: panelSlideUp 0.9s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+        }
+
+        /* 4. Right Panel: Slide In from Right (Logs) */
+        @keyframes panelSlideRight {
+            0% {
+                opacity: 0;
+                transform: translateX(20px);
+            }
+            100% {
+                opacity: 1;
+                transform: translateX(0);
+            }
+        }
+        .animate-panel-right {
+            opacity: 0;
+            animation: panelSlideRight 0.9s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+        }
+
+        /* 5. Account Rows: Staggered Slide In from Left */
+        @keyframes rowSlideLeft {
+            0% {
+                opacity: 0;
+                transform: translateX(-16px);
+            }
+            100% {
+                opacity: 1;
+                transform: translateX(0);
+            }
+        }
+        .animate-row {
+            opacity: 0;
+            animation: rowSlideLeft 0.8s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+        }
+
+        /* Custom slide and fade-in for dynamic telemetry logs */
+        @keyframes slideInLog {
+            from {
+                opacity: 0;
+                transform: translateX(-4px);
+            }
+            to {
+                opacity: 1;
+                transform: translateX(0);
+            }
+        }
+        .log-line-anim {
+            animation: slideInLog 0.3s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+        }
+    </style>
+</head>
+<body class="font-sans min-h-screen flex flex-col justify-between p-3 md:p-6 lg:p-8 text-premium-text">
+
+    <!-- Premium Minimal Floating Header -->
+    <header class="w-full px-4 py-3.5 md:px-6 md:py-4 flex flex-col md:flex-row justify-between items-start md:items-center gap-4 premium-card rounded-2xl mb-6 md:mb-8 animate-header" style="animation-delay: 50ms;">
+        <div class="flex items-center space-x-3 md:space-x-4 relative z-10">
+            <!-- Sleek modern glowing logo -->
+            <div class="w-9 h-9 md:w-10 md:h-10 rounded-xl bg-gradient-to-tr from-premium-blue to-premium-indigo flex items-center justify-center relative shadow-lg shadow-blue-500/10">
+                <i data-lucide="shield-check" class="w-4 h-4 md:w-5 md:h-5 text-white"></i>
+                <!-- Small active pulse -->
+                <span class="absolute -top-0.5 -right-0.5 w-1.5 h-1.5 md:w-2 md:h-2 rounded-full bg-premium-emerald indicator-glow-green"></span>
+            </div>
+            <div>
+                <div class="flex items-center gap-1.5 md:gap-2">
+                    <span class="text-base md:text-lg font-bold tracking-tight text-white font-sans">FanpayHelper</span>
+                    <span class="text-[8px] md:text-[9px] bg-white/5 text-premium-muted px-1.5 py-0.5 rounded-full border border-white/5 font-mono">v1.1</span>
+                </div>
+                <p class="text-[10px] md:text-xs text-premium-muted">Управление фоновыми процессами и интеграцией</p>
+            </div>
+        </div>
+
+        <!-- Sleek clean navigation tabs (Apple-style sliding menu with mobile swipe) -->
+        <nav class="flex p-0.5 md:p-1 bg-white/5 rounded-full border border-white/5 backdrop-blur-md relative z-10 overflow-x-auto max-w-full no-scrollbar whitespace-nowrap">
+            <a href="#" class="px-4 py-1.5 md:px-5 md:py-2 text-[10px] md:text-xs font-semibold rounded-full bg-white text-premium-bg shadow-sm transition-all duration-300">Панель</a>
+            <a href="page_auto_delivery.html" class="px-4 py-1.5 md:px-5 md:py-2 text-[10px] md:text-xs font-semibold text-premium-muted hover:text-white transition-all duration-300">Товары</a>
+            <a href="page_damping.html" class="px-4 py-1.5 md:px-5 md:py-2 text-[10px] md:text-xs font-semibold text-premium-muted hover:text-white transition-all duration-300">Демпинг</a>
+            <a href="page_ai_config.html" class="px-4 py-1.5 md:px-5 md:py-2 text-[10px] md:text-xs font-semibold text-premium-muted hover:text-white transition-all duration-300">ИИ Настройки</a>
+        </nav>
+    </header>
+
+    <!-- Main Workspace (Logical, Clean, Space-Efficient) -->
+    <main class="flex-grow max-w-[1650px] w-full mx-auto space-y-4 md:space-y-6">
+
+        <!-- STATS SECTION (High-density 2x2 grid on mobile, pristine minimalism) -->
+        <div class="grid grid-cols-2 lg:grid-cols-4 gap-4 md:gap-6">
+            <!-- Stat 1 -->
+            <div class="premium-card rounded-2xl p-3 md:p-5 flex items-center justify-between animate-stat" style="animation-delay: 100ms;">
+                <div class="relative z-10">
+                    <span class="text-[9px] md:text-[11px] text-premium-muted uppercase tracking-wider font-semibold">Баланс профилей</span>
+                    <h3 class="text-base md:text-2xl font-bold text-white tracking-tight mt-0.5 md:mt-1">148,250 ₽</h3>
+                </div>
+                <div class="p-2 md:p-3 rounded-xl bg-blue-500/10 text-premium-blue border border-blue-500/10 relative z-10">
+                    <i data-lucide="wallet" class="w-4 h-4 md:w-5 md:h-5"></i>
+                </div>
+            </div>
+
+            <!-- Stat 2 -->
+            <div class="premium-card rounded-2xl p-3 md:p-5 flex items-center justify-between animate-stat" style="animation-delay: 150ms;">
+                <div class="relative z-10">
+                    <span class="text-[9px] md:text-[11px] text-premium-muted uppercase tracking-wider font-semibold">Заказы сегодня</span>
+                    <h3 class="text-base md:text-2xl font-bold text-premium-emerald tracking-tight mt-0.5 md:mt-1">+142 шт.</h3>
+                </div>
+                <div class="p-2 md:p-3 rounded-xl bg-emerald-500/10 text-premium-emerald border border-emerald-500/10 relative z-10">
+                    <i data-lucide="shopping-bag" class="w-4 h-4 md:w-5 md:h-5"></i>
+                </div>
+            </div>
+
+            <!-- Stat 3 -->
+            <div class="premium-card rounded-2xl p-3 md:p-5 flex items-center justify-between animate-stat" style="animation-delay: 200ms;">
+                <div class="relative z-10">
+                    <span class="text-[9px] md:text-[11px] text-premium-muted uppercase tracking-wider font-semibold">Активные потоки</span>
+                    <h3 class="text-base md:text-2xl font-bold text-white tracking-tight mt-0.5 md:mt-1">2 / 2 потока</h3>
+                </div>
+                <div class="p-2 md:p-3 rounded-xl bg-indigo-500/10 text-premium-indigo border border-indigo-500/10 relative z-10">
+                    <i data-lucide="activity" class="w-4 h-4 md:w-5 md:h-5"></i>
+                </div>
+            </div>
+
+            <!-- Stat 4 -->
+            <div class="premium-card rounded-2xl p-3 md:p-5 flex items-center justify-between animate-stat" style="animation-delay: 250ms;">
+                <div class="relative z-10">
+                    <span class="text-[9px] md:text-[11px] text-premium-muted uppercase tracking-wider font-semibold">Пул LiteLLM ключей</span>
+                    <h3 class="text-base md:text-2xl font-bold text-white tracking-tight mt-0.5 md:mt-1">12 активных</h3>
+                </div>
+                <div class="p-2 md:p-3 rounded-xl bg-white/5 text-premium-muted border border-white/5 relative z-10">
+                    <i data-lucide="key-round" class="w-4 h-4 md:w-5 md:h-5"></i>
+                </div>
+            </div>
+        </div>
+
+        <!-- MAIN LAYOUT split exactly 65% / 35% (Compact gap on mobile, balanced gap on desktop) -->
+        <div class="grid grid-cols-1 lg:grid-cols-12 gap-4 md:gap-6">
+            
+            <!-- LEFT PANEL: Accounts Console (Highly-convenient bento control room with staggered delays) -->
+            <div class="lg:col-span-8 space-y-4 md:space-y-6 animate-panel-left" style="animation-delay: 350ms;">
+                <div class="premium-card rounded-2xl p-4 md:p-6">
+                    <div class="flex justify-between items-center border-b border-white/5 pb-4 mb-6 relative z-10">
+                        <div>
+                            <h2 class="text-base md:text-lg font-bold text-white tracking-tight flex items-center gap-2">
+                                <i data-lucide="users" class="w-4 h-4 text-premium-blue"></i> Управление аккаунтами Fanpay
+                            </h2>
+                            <p class="text-[10px] md:text-xs text-premium-muted mt-0.5">Включение/выключение процессов в один клик</p>
+                        </div>
+                        <button class="px-3.5 py-1.5 md:px-4 md:py-2 bg-gradient-to-tr from-premium-blue to-premium-indigo text-white text-[10px] md:text-xs font-semibold rounded-full hover:brightness-110 transition-all shadow-lg shadow-blue-500/15 flex items-center gap-1.5">
+                            <i data-lucide="plus" class="w-3.5 h-3.5"></i> Добавить аккаунт
+                        </button>
+                    </div>
+
+                    <!-- Clean Accounts List -->
+                    <div class="space-y-3 md:space-y-4 relative z-10">
+                        <!-- Account Row 1 -->
+                        <div class="bg-white/[0.02] border border-white/5 rounded-xl p-3.5 md:p-5 flex flex-col md:flex-row justify-between items-start md:items-center gap-3.5 md:gap-4 hover:bg-white/[0.04] transition-colors">
+                            <!-- Left: Profile identity -->
+                            <div class="flex items-center gap-3 md:gap-4">
+                                <div class="w-9 h-9 md:w-11 md:h-11 rounded-full bg-gradient-to-br from-blue-500/10 to-indigo-500/10 border border-blue-500/20 flex items-center justify-center text-premium-blue font-bold text-xs md:text-sm">
+                                    01
+                                </div>
+                                <div>
+                                    <div class="flex items-center gap-1.5 md:gap-2">
+                                        <h3 class="font-bold text-white text-sm md:text-base">Steam_Store_Seller</h3>
+                                        <span class="w-1.5 h-1.5 md:w-2 md:h-2 rounded-full bg-premium-emerald indicator-glow-green animate-pulse"></span>
+                                    </div>
+                                    <p class="text-[10px] md:text-xs text-premium-muted mt-0.5 flex items-center gap-1.5">
+                                        <i data-lucide="globe" class="w-3 md:w-3.5 h-3 md:h-3.5 text-premium-blue"></i> Proxy: 194.24.11.4:8080 (RU) • Latency: <span class="text-premium-emerald font-bold">120ms</span>
+                                    </p>
+                                </div>
+                            </div>
+
+                            <!-- Middle: Instant Toggles (Pragmatic iOS switches with bounce physics) -->
+                            <div class="flex flex-wrap items-center gap-2 md:gap-4 w-full md:w-auto">
+                                <!-- Toggle 1 -->
+                                <div onclick="toggleSwitch(this)" data-state="on" class="ios-switch-toggle flex items-center gap-1.5 md:gap-2 bg-premium-emerald/10 border border-premium-emerald/20 text-premium-emerald px-2.5 py-1 md:px-3 md:py-1.5 rounded-full text-[10px] md:text-xs font-semibold cursor-pointer select-none">
+                                    <span>Онлайн:</span>
+                                    <span class="status-text font-bold">ВКЛ</span>
+                                </div>
+                                <!-- Toggle 2 -->
+                                <div onclick="toggleSwitch(this)" data-state="on" class="ios-switch-toggle flex items-center gap-1.5 md:gap-2 bg-premium-emerald/10 border border-premium-emerald/20 text-premium-emerald px-2.5 py-1 md:px-3 md:py-1.5 rounded-full text-[10px] md:text-xs font-semibold cursor-pointer select-none">
+                                    <span>ИИ:</span>
+                                    <span class="status-text font-bold">ВКЛ</span>
+                                </div>
+                                <!-- Toggle 3 -->
+                                <div onclick="toggleSwitch(this)" data-state="off" class="ios-switch-toggle flex items-center gap-1.5 md:gap-2 bg-white/5 border border-white/5 text-premium-muted opacity-50 px-2.5 py-1 md:px-3 md:py-1.5 rounded-full text-[10px] md:text-xs font-semibold cursor-pointer select-none">
+                                    <span>Демпинг:</span>
+                                    <span class="status-text font-bold">ОФФ</span>
+                                </div>
+                            </div>
+
+                            <!-- Right: Operations and Action tools -->
+                            <div class="flex items-center gap-2 w-full md:w-auto justify-end">
+                                <button class="w-8 h-8 rounded-lg bg-white/5 hover:bg-white/10 border border-white/5 text-premium-muted hover:text-white flex items-center justify-center transition-all">
+                                    <i data-lucide="settings" class="w-4 h-4"></i>
+                                </button>
+                                <button class="w-8 h-8 rounded-lg bg-red-500/10 hover:bg-red-500/20 border border-red-500/10 text-red-400 hover:text-red-300 flex items-center justify-center transition-all">
+                                    <i data-lucide="trash-2" class="w-4 h-4"></i>
+                                </button>
+                            </div>
+                        </div>
+
+                        <!-- Account Row 2 -->
+                        <div class="bg-white/[0.02] border border-white/5 rounded-xl p-3.5 md:p-5 flex flex-col md:flex-row justify-between items-start md:items-center gap-3.5 md:gap-4 hover:bg-white/[0.04] transition-colors">
+                            <!-- Left: Profile identity -->
+                            <div class="flex items-center gap-3 md:gap-4">
+                                <div class="w-9 h-9 md:w-11 md:h-11 rounded-full bg-gradient-to-br from-blue-500/10 to-indigo-500/10 border border-blue-500/20 flex items-center justify-center text-premium-blue font-bold text-xs md:text-sm">
+                                    02
+                                </div>
+                                <div>
+                                    <div class="flex items-center gap-1.5 md:gap-2">
+                                        <h3 class="font-bold text-white text-sm md:text-base">Keys_Master_RU</h3>
+                                        <span class="w-1.5 h-1.5 md:w-2 md:h-2 rounded-full bg-premium-emerald indicator-glow-green animate-pulse"></span>
+                                    </div>
+                                    <p class="text-[10px] md:text-xs text-premium-muted mt-0.5 flex items-center gap-1.5">
+                                        <i data-lucide="globe" class="w-3 md:w-3.5 h-3 md:h-3.5 text-premium-blue"></i> Proxy: 45.12.89.2:3128 (US) • Latency: <span class="text-premium-blue font-bold">380ms</span>
+                                    </p>
+                                </div>
+                            </div>
+
+                            <!-- Middle: Instant Toggles -->
+                            <div class="flex flex-wrap items-center gap-2 md:gap-4 w-full md:w-auto">
+                                <!-- Toggle 1 -->
+                                <div onclick="toggleSwitch(this)" data-state="on" class="ios-switch-toggle flex items-center gap-1.5 md:gap-2 bg-premium-emerald/10 border border-premium-emerald/20 text-premium-emerald px-2.5 py-1 md:px-3 md:py-1.5 rounded-full text-[10px] md:text-xs font-semibold cursor-pointer select-none">
+                                    <span>Онлайн:</span>
+                                    <span class="status-text font-bold">ВКЛ</span>
+                                </div>
+                                <!-- Toggle 2 -->
+                                <div onclick="toggleSwitch(this)" data-state="off" class="ios-switch-toggle flex items-center gap-1.5 md:gap-2 bg-white/5 border border-white/5 text-premium-muted opacity-50 px-2.5 py-1 md:px-3 md:py-1.5 rounded-full text-[10px] md:text-xs font-semibold cursor-pointer select-none">
+                                    <span>ИИ:</span>
+                                    <span class="status-text font-bold">ОФФ</span>
+                                </div>
+                                <!-- Toggle 3 -->
+                                <div onclick="toggleSwitch(this)" data-state="on" class="ios-switch-toggle flex items-center gap-1.5 md:gap-2 bg-premium-emerald/10 border border-premium-emerald/20 text-premium-emerald px-2.5 py-1 md:px-3 md:py-1.5 rounded-full text-[10px] md:text-xs font-semibold cursor-pointer select-none">
+                                    <span>Выдача:</span>
+                                    <span class="status-text font-bold">ВКЛ</span>
+                                </div>
+                            </div>
+
+                            <!-- Right: Actions -->
+                            <div class="flex items-center gap-2 w-full md:w-auto justify-end">
+                                <button class="w-8 h-8 rounded-lg bg-white/5 hover:bg-white/10 border border-white/5 text-premium-muted hover:text-white flex items-center justify-center transition-all">
+                                    <i data-lucide="settings" class="w-4 h-4"></i>
+                                </button>
+                                <button class="w-8 h-8 rounded-lg bg-red-500/10 hover:bg-red-500/20 border border-red-500/10 text-red-400 hover:text-red-300 flex items-center justify-center transition-all">
+                                    <i data-lucide="trash-2" class="w-4 h-4"></i>
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- RIGHT PANEL: Telemetry Stream (High-fidelity, perfectly integrated logs with mobile compactness) -->
+            <div class="lg:col-span-4 animate-spring-up" style="animation-delay: 350ms;">
+                <div class="premium-card rounded-2xl p-4 md:p-6 h-full flex flex-col justify-between min-h-[260px] md:min-h-[420px]">
+                    <div class="w-full">
+                        <div class="flex justify-between items-center border-b border-white/5 pb-4 mb-4">
+                            <h2 class="text-base font-bold text-white tracking-tight flex items-center gap-2">
+                                <i data-lucide="terminal" class="w-4 h-4 text-premium-blue"></i> Живые логи сервера
+                            </h2>
+                            <span class="flex items-center gap-1 text-[10px] font-bold text-premium-blue bg-blue-500/5 border border-blue-500/10 px-2 py-0.5 rounded-full">
+                                <span class="w-1.5 h-1.5 rounded-full bg-premium-blue animate-ping"></span> Live
+                            </span>
+                        </div>
+
+                        <!-- Spacious, scannable log lines with subtle tag chips -->
+                        <div class="font-mono text-[11px] leading-relaxed text-premium-muted space-y-3.5 max-h-[300px] overflow-y-auto pr-1">
+                            <p><span class="text-premium-blue font-bold">[20:45:12]</span> <span class="text-white bg-white/5 border border-white/5 px-1.5 py-0.25 text-[9px] rounded font-mono font-normal">SYS</span> Сервер успешно запущен.</p>
+                            <p><span class="text-premium-blue font-bold">[20:45:12]</span> <span class="text-white bg-white/5 border border-white/5 px-1.5 py-0.25 text-[9px] rounded font-mono font-normal">DB</span> Подключено к PostgreSQL.</p>
+                            <p><span class="text-premium-blue font-bold">[20:45:15]</span> <span class="text-premium-indigo bg-indigo-500/5 border border-indigo-500/10 px-1.5 py-0.25 text-[9px] rounded font-mono font-normal">CAMOU</span> Профиль Steam_Store авторизован.</p>
+                            <p><span class="text-premium-blue font-bold">[20:45:32]</span> <span class="text-premium-emerald bg-emerald-500/5 border border-emerald-500/10 px-1.5 py-0.25 text-[9px] rounded font-mono font-normal">ORDER</span> Обнаружен оплаченный заказ #789.</p>
+                            <p><span class="text-premium-blue font-bold">[20:45:33]</span> <span class="text-premium-emerald bg-emerald-500/5 border border-emerald-500/10 px-1.5 py-0.25 text-[9px] rounded font-mono font-normal">AUTO-D</span> Ключ выдан за 1.2с.</p>
+                            <p><span class="text-premium-blue font-bold">[20:45:43]</span> <span class="text-premium-blue bg-blue-500/5 border border-blue-500/10 px-1.5 py-0.25 text-[9px] rounded font-mono font-normal">LLM</span> Ответ отправлен Gamer32 (2.1с).</p>
+                        </div>
+                    </div>
+
+                    <div class="border-t border-white/5 pt-4 flex items-center justify-between text-[10px] text-premium-muted">
+                        <span>РЕЖИМ ОТЛАДКИ: ТЕЛЕМЕТРИЯ v1.1</span>
+                        <i data-lucide="download" class="w-4 h-4 text-premium-blue cursor-pointer hover:text-white transition-all"></i>
+                    </div>
+                </div>
+            </div>
+
+        </div>
+
+    </main>
+
+    <!-- Compact Footer -->
+    <footer class="w-full flex flex-col md:flex-row justify-between items-center gap-4 border-t border-white/5 pt-6 mt-12 text-xs font-mono text-premium-muted">
+        <p>PLATFORM CORE MODEL: LITE-WORKBENCH-PRO</p>
+        <p>© 2026 FanpayHelper. Peak ergonomics meets Apple Fluid Aesthetics and Google Usability.</p>
+    </footer>
+
+    <!-- Scripts for elite interactions -->
+    <script>
+        // Initialize Lucide icons
+        lucide.createIcons();
+
+        // 1. Magnetic cursor hover glow & 3D Parallax Tilt effect for glass cards
+        document.querySelectorAll('.premium-card').forEach(card => {
+            card.addEventListener('mousemove', e => {
+                const rect = card.getBoundingClientRect();
+                const x = e.clientX - rect.left;
+                const y = e.clientY - rect.top;
+                card.style.setProperty('--mouse-x', `${x}px`);
+                card.style.setProperty('--mouse-y', `${y}px`);
+
+                // Calculate tilt angles based on cursor offset from card center
+                const cardWidth = rect.width;
+                const cardHeight = rect.height;
+                const centerX = rect.left + cardWidth / 2;
+                const centerY = rect.top + cardHeight / 2;
+                const mouseX = e.clientX - centerX;
+                const mouseY = e.clientY - centerY;
+                
+                // Max tilt angle in degrees (very subtle and elegant)
+                const maxTilt = 4; 
+                const rotateX = -(mouseY / (cardHeight / 2)) * maxTilt;
+                const rotateY = (mouseX / (cardWidth / 2)) * maxTilt;
+
+                card.style.setProperty('--rotate-x', `${rotateX}deg`);
+                card.style.setProperty('--rotate-y', `${rotateY}deg`);
+            });
+
+            card.addEventListener('mouseleave', () => {
+                // Reset card rotation smoothly on mouse leave
+                card.style.setProperty('--rotate-x', '0deg');
+                card.style.setProperty('--rotate-y', '0deg');
+            });
+        });
+
+        // 2. Tactile switch toggle with Apple-style spring bounce
+        function toggleSwitch(element) {
+            const state = element.getAttribute('data-state');
+            const statusText = element.querySelector('.status-text');
+            
+            // Pop spring animation
+            element.style.transform = 'scale(0.9)';
+            
+            setTimeout(() => {
+                element.style.transform = 'scale(1.08)';
+                
+                if (state === 'on') {
+                    // Turn OFF
+                    element.setAttribute('data-state', 'off');
+                    element.classList.remove('bg-premium-emerald/10', 'text-premium-emerald', 'border-premium-emerald/20');
+                    element.classList.add('bg-white/5', 'text-premium-muted', 'border-white/5', 'opacity-50');
+                    statusText.textContent = 'ОФФ';
+                } else {
+                    // Turn ON
+                    element.setAttribute('data-state', 'on');
+                    element.classList.add('bg-premium-emerald/10', 'text-premium-emerald', 'border-premium-emerald/20');
+                    element.classList.remove('bg-white/5', 'text-premium-muted', 'border-white/5', 'opacity-50');
+                    statusText.textContent = 'ВКЛ';
+                }
+                
+                setTimeout(() => {
+                    element.style.transform = 'scale(1)';
+                }, 120);
+            }, 80);
+        }
+
+        // 3. Dynamic Log Generator with smooth slide-up
+        const logContainer = document.querySelector('.font-mono.text-\\[11px\\]');
+        const simulatedLogs = [
+            { tag: "DAMP", text: "CS2 Prime цена в топе изменена: 1289 ₽ -> 1288 ₽. Демпинг конкурента.", type: "amber" },
+            { tag: "CAMOU", text: "Скрытый отпечаток WebGL и Canvas успешно подменен для Keys_Master.", type: "indigo" },
+            { tag: "SYS", text: "Пул ИИ-ключей проверен. Сбоев не обнаружено, Round-Robin стабилен.", type: "sys" },
+            { tag: "ORDER", text: "Обнаружена новая оплата заказа #790 (290 ₽). Покупатель: SteamPlayer.", type: "emerald" },
+            { tag: "AUTO-D", text: "Выслан товар по заказу #790 в чат. Время ответа: 1.1с.", type: "emerald" },
+            { tag: "LLM", text: "ИИ ответил SteamPlayer: 'Спасибо за покупку! Ждем вас снова.' (1.8с)", type: "blue" }
+        ];
+
+        let logIndex = 0;
+        
+        setInterval(() => {
+            const now = new Date();
+            const timeStr = now.toTimeString().split(' ')[0];
+            const logItem = simulatedLogs[logIndex];
+            
+            // Map tag colors
+            let tagClass = "text-white bg-white/5 border border-white/5";
+            if (logItem.type === "indigo") tagClass = "text-premium-indigo bg-indigo-500/5 border border-indigo-500/10";
+            if (logItem.type === "emerald") tagClass = "text-premium-emerald bg-emerald-500/5 border border-emerald-500/10";
+            if (logItem.type === "blue") tagClass = "text-premium-blue bg-blue-500/5 border border-blue-500/10";
+            if (logItem.type === "amber") tagClass = "text-premium-amber bg-amber-500/5 border border-amber-500/10";
+
+            // Create log element
+            const p = document.createElement('p');
+            p.className = 'log-line-anim';
+            p.innerHTML = `<span class="text-premium-blue font-bold">[${timeStr}]</span> <span class="${tagClass} px-1.5 py-0.25 text-[9px] rounded font-mono font-normal">${logItem.tag}</span> ${logItem.text}`;
+            
+            // Append and scroll smoothly
+            logContainer.appendChild(p);
+            logContainer.scrollTop = logContainer.scrollHeight;
+            
+            logIndex = (logIndex + 1) % simulatedLogs.length;
+        }, 5500);
+
+    </script>
+</body>
+</html>
