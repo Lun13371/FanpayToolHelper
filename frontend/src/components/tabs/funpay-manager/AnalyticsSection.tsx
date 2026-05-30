@@ -48,10 +48,10 @@ export default function AnalyticsSection({ setActiveSubTab, setGlobalMode }: Ana
   }, [statsData]);
 
   // Загрузка статистики
-  const fetchStats = async (accId: number) => {
+  const fetchStats = async (accId: number, depthPages: number = 15) => {
     setStatsLoading(true);
     try {
-      const res = await fetch(`${API_URL}/api/v1/accounts/${accId}/sales-stats`, {
+      const res = await fetch(`${API_URL}/api/v1/accounts/${accId}/sales-stats?pages=${depthPages}`, {
         headers: { Authorization: `Bearer ${token}` }
       });
       if (res.ok) {
@@ -67,7 +67,7 @@ export default function AnalyticsSection({ setActiveSubTab, setGlobalMode }: Ana
 
   useEffect(() => {
     if (selectedAccountId && token) {
-      fetchStats(selectedAccountId);
+      fetchStats(selectedAccountId, 15);
     }
   }, [selectedAccountId, token]);
 
@@ -349,6 +349,30 @@ export default function AnalyticsSection({ setActiveSubTab, setGlobalMode }: Ana
         </div>
       ) : (
         <>
+          {/* ТУЛБАР АНАЛИТИКИ */}
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 p-4 sm:p-5 rounded-3xl glow-card relative z-10" onMouseMove={handleMouseMove}>
+            <div className="glow-bg rounded-3xl" />
+            <div className="relative z-10">
+              <span className="text-[8px] font-black text-brand-cyan uppercase tracking-widest block">Аналитический модуль:</span>
+              <h2 className="text-xs sm:text-sm font-black text-white uppercase tracking-wider mt-0.5">Полная финансовая аналитика</h2>
+              <p className="text-[10px] text-slate-400 mt-1 max-w-2xl">
+                Данные автоматически догружаются напрямую с FunPay (включая рекурсивный AJAX-сбор всех сделок и отзывов под капотом).
+              </p>
+            </div>
+            
+            <div className="flex items-center gap-3 relative z-10 shrink-0">
+              <button
+                onClick={() => selectedAccountId && fetchStats(selectedAccountId, 15)}
+                disabled={statsLoading}
+                className="py-2 px-4 rounded-xl text-[10px] font-black uppercase tracking-wider bg-brand-cyan text-slate-950 hover:bg-brand-cyan/90 transition-all flex items-center gap-1.5 hover:shadow-md hover:shadow-brand-cyan/25 disabled:opacity-50 disabled:pointer-events-none"
+                title="Обновить данные с FunPay"
+              >
+                <RefreshCw className={`w-3.5 h-3.5 text-slate-950 ${statsLoading ? 'animate-spin' : ''}`} />
+                <span>{statsLoading ? 'Синхронизация...' : 'Обновить статистику'}</span>
+              </button>
+            </div>
+          </div>
+
           {/* АНАЛИТИЧЕСКИЕ КАРТОЧКИ */}
           <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4 relative z-10">
             {/* Карточка 1: Выручка */}

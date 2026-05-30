@@ -68,13 +68,15 @@ def parse_trade_orders(html: str) -> List[Dict[str, Any]]:
     completed_orders = []
 
     for row in order_rows:
-        status_div = row.find(class_="tc-status")
-        if not status_div:
+        classname = row.get("class", [])
+        # Пропускаем возвращенные ("warning") или незавершенные/оплаченные ("info") заказы.
+        # Все остальные заказы (без "warning" и "info") являются завершенными (CLOSED).
+        if "warning" in classname or "info" in classname:
             continue
-        status_text = status_div.text.strip().lower()
 
-        # We are only interested in completed sales
-        is_completed = any(s in status_text for s in ["завершен", "закрыт", "отзыв", "подтвержден", "выполнен"]) and "оплачен" not in status_text
+        is_completed = True
+        status_div = row.find(class_="tc-status")
+        status_text = status_div.text.strip() if status_div else "Закрыт"
 
         # Order price
         price_div = row.find(class_="tc-price")
@@ -112,7 +114,7 @@ def parse_trade_orders(html: str) -> List[Dict[str, Any]]:
             "date": formatted_date,
             "hour": hour_val,
             "is_completed": is_completed,
-            "status": status_div.text.strip()
+            "status": status_text
         })
 
     return completed_orders

@@ -1,5 +1,7 @@
 import logging
 import asyncio
+import httpx
+from bs4 import BeautifulSoup
 from datetime import datetime
 from typing import Any, List, Dict
 from fastapi import APIRouter, Depends, HTTPException
@@ -71,11 +73,62 @@ def is_tag_negative(tag: str) -> bool:
     return tag in ["⏳ Долгое ожидание", "⚠️ Проблема с товаром", "❌ Игнор / Грубость", "👎 Плохой опыт"]
 
 
+async def fetch_all_profile_reviews(http_client: httpx.AsyncClient, user_id: str, client: FanpayClient, initial_html: str) -> List[Dict[str, Any]]:
+    """
+    Парсит первую страницу профиля и затем рекурсивно догружает абсолютно ВСЕ отзывы с помощью AJAX-запросов (JS имитация).
+    """
+    # 1. Извлекаем CSRF-токен и парсим отзывы с основной страницы
+    csrf_token = client._extract_csrf_token(initial_html)
+    all_reviews = parse_profile_reviews(initial_html)
+    
+    # 2. Находим первоначальный токен продолжения reviews
+    soup = BeautifulSoup(initial_html, "html.parser")
+    more_btn = soup.find("button", class_="btn-more") or soup.find("a", class_="btn-more")
+    next_reviews_token = more_btn.get("data-next") if more_btn else None
+    
+    # Если у нас есть csrf_token и next_reviews_token, грузим больше отзывов по AJAX
+    if csrf_token and next_reviews_token and user_id:
+        # Ограничимся 10 дополнительными AJAX-запросами (около 300-400 отзывов)
+        for _ in range(10):
+            try:
+                ajax_resp = await http_client.post(
+                    "https://funpay.com/users/reviews",
+                    data={
+                        "user": int(user_id),
+                        "next": int(next_reviews_token),
+                        "section": "seller",
+                        "csrf_token": csrf_token
+                    },
+                    headers={"X-Requested-With": "XMLHttpRequest"}
+                )
+                if ajax_resp.status_code == 200:
+                    res_data = ajax_resp.json()
+                    ajax_html = res_data.get("html", "")
+                    next_reviews_token = res_data.get("next")
+                    
+                    if ajax_html:
+                        ajax_revs = parse_profile_reviews(ajax_html)
+                        if not ajax_revs:
+                            break
+                        all_reviews.extend(ajax_revs)
+                    
+                    if not next_reviews_token:
+                        break
+                else:
+                    break
+            except Exception as ex:
+                logger.warning(f"Ошибка при AJAX загрузке отзывов: {str(ex)}")
+                break
+                
+    return all_reviews
+
+
 router = APIRouter(prefix="/accounts", tags=["Аналитика Аккаунтов"])
 
 @router.get("/{account_id}/sales-stats")
 async def get_account_sales_stats(
     account_id: int,
+    pages: int = 3,  # По умолчанию загружаем 3 страницы истории продаж
     db: AsyncSession = Depends(get_session),
     current_user: User = Depends(get_current_user)
 ) -> Any:
@@ -90,6 +143,9 @@ async def get_account_sales_stats(
     await verify_account_access(db, current_user, account_id)
 
     client = FanpayClient(account.golden_key, account.proxy_url, account.user_agent, account.cookies)
+    
+    orders_htmls = []
+    profile_resp = None
     
     # Загружаем страницу продаж и страницу профиля параллельно
     async with client._get_client() as http_client:
@@ -106,15 +162,44 @@ async def get_account_sales_stats(
             if resp.status_code != 200:
                 raise HTTPException(status_code=400, detail=f"Не удалось получить историю продаж с FunPay. Код: {resp.status_code}")
                 
-            profile_resp = None
+            orders_htmls.append(resp.text)
+            
             if len(results) > 1 and not isinstance(results[1], Exception):
                 profile_resp = results[1]
                 
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Ошибка подключения к FunPay: {str(e)}")
 
-    # Парсим заказы и отзывы с помощью вынесенного сервиса parser.py
-    completed_orders = parse_trade_orders(resp.text)
+        # Загружаем дополнительные страницы последовательно с использованием continue-токена
+        current_html = resp.text
+        for _ in range(1, pages):
+            soup = BeautifulSoup(current_html, "html.parser")
+            continue_input = soup.find("input", {"type": "hidden", "name": "continue"})
+            continue_token = continue_input.get("value") if continue_input else None
+            
+            if not continue_token:
+                break  # Страницы закончились
+                
+            try:
+                # Отправляем POST-запрос с continue-токеном для получения следующей страницы
+                next_resp = await http_client.post(
+                    "https://funpay.com/orders/trade",
+                    data={"continue": continue_token}
+                )
+                if next_resp.status_code == 200:
+                    current_html = next_resp.text
+                    orders_htmls.append(current_html)
+                else:
+                    break
+            except Exception as e:
+                logger.warning(f"Ошибка при получении следующей страницы истории продаж: {str(e)}")
+                break
+
+    # Парсим заказы со всех скачанных страниц
+    completed_orders = []
+    for html_content in orders_htmls:
+        page_orders = parse_trade_orders(html_content)
+        completed_orders.extend(page_orders)
     
     recent_reviews = []
     reviews_distribution = {5: 0, 4: 0, 3: 0, 2: 0, 1: 0}
@@ -128,7 +213,7 @@ async def get_account_sales_stats(
     }
     
     if profile_resp and profile_resp.status_code == 200:
-        parsed_revs = parse_profile_reviews(profile_resp.text)
+        parsed_revs = await fetch_all_profile_reviews(http_client, account.funpay_user_id, client, profile_resp.text)
         
         for r in parsed_revs:
             rating_val = r["rating"]
@@ -469,7 +554,7 @@ async def recalculate_reviews_ai(
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Ошибка соединения с FunPay: {str(e)}")
 
-    parsed_revs = parse_profile_reviews(resp.text)
+    parsed_revs = await fetch_all_profile_reviews(http_client, account.funpay_user_id, client, resp.text)
     if not parsed_revs:
         return {"success": True, "message": "На странице профиля нет отзывов для анализа.", "reviews_stats": None}
 
