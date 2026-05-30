@@ -49,6 +49,9 @@ class FanpayAccount(SQLModel, table=True):
     ai_audit_cache: Optional[str] = Field(default=None)
     ai_audit_created_at: Optional[datetime] = Field(default=None)
     
+    # Кэш отзывов покупателей с тегами (для экономии API-ключей ИИ)
+    reviews_cache: Optional[List[Dict[str, Any]]] = Field(default=None, sa_column=Column(JSON))
+    
     # Таймстамп последнего ручного ответа оператора в чате Funpay для засыпания ИИ на 20 минут
     last_operator_activity: Optional[datetime] = Field(default=None)
     created_at: datetime = Field(default_factory=datetime.utcnow)

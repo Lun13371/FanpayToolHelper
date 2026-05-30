@@ -143,18 +143,15 @@ class AIService:
                 })
 
         # Модели по умолчанию для текстовых запросов (в порядке приоритета)
+        # Kimi K2.5 — оптимальный выбор: молниеносно быстрая и невероятно умная модель на вашем ключе!
         text_models = [
-            "fireworks_ai/accounts/fireworks/models/gpt-oss-120b",            # GPT OSS 120B (очень дешевая, активна на ключе)
-            "fireworks_ai/accounts/fireworks/models/kimi-k2p6",               # Kimi K2.6 (активна на ключе)
-            "fireworks_ai/accounts/fireworks/models/deepseek-v4-pro",         # DeepSeek V4 Pro (активна на ключе)
-            "fireworks_ai/accounts/fireworks/models/kimi-k2p5",               # Kimi K2.5 (активна на ключе)
-            "fireworks_ai/accounts/fireworks/models/glm-5p1",                 # GLM 5P1 (активна на ключе)
-            "fireworks_ai/accounts/fireworks/models/llama-v3p3-70b-instruct", # Llama 3.3 70B (резерв)
-            "fireworks_ai/accounts/fireworks/models/llama-v3p1-8b-instruct"   # Llama 3.1 8B (резерв)
+            "accounts/fireworks/models/kimi-k2p5",
+            "accounts/fireworks/models/gpt-oss-120b",
+            "accounts/fireworks/models/deepseek-v4-pro"
         ]
         
         vision_models = [
-            "fireworks_ai/accounts/fireworks/models/qwen2-5-vl-72b-instruct"
+            "accounts/fireworks/models/qwen2-5-vl-72b-instruct"
         ]
         
         candidate_models = vision_models if screenshot_base64 else text_models
@@ -170,11 +167,12 @@ class AIService:
                     logger.info(f"Запрос к ИИ (ID ключа: {key_obj.id}) с моделью {model}...")
                     response = await litellm.acompletion(
                         model=model,
+                        custom_llm_provider="fireworks_ai",
                         messages=messages,
                         api_key=key_obj.key_value,
                         temperature=0.7,
                         max_tokens=3000,
-                        timeout=30.0
+                        timeout=90.0
                     )
                     
                     # Извлекаем текст ответа
@@ -211,3 +209,125 @@ class AIService:
     @classmethod
     async def mark_failure(cls, db: AsyncSession, key: AIKey):
         await cls.mark_key_failure(db, key)
+
+    @classmethod
+    async def classify_reviews_batch(
+        cls,
+        db: AsyncSession,
+        reviews: List[dict]
+    ) -> List[dict]:
+        """
+        Использует ИИ (быструю и экономную модель Qwen или Llama) для пакетной классификации отзывов.
+        Возвращает список отзывов с добавленныи ключом "tags".
+        Если вызов ИИ завершился ошибкой или ключей нет, возвращается исходный список (с тегами по умолчанию).
+        """
+        if not reviews:
+            return []
+
+        # Сначала проверяем, есть ли рабочий ключ в БД
+        key_obj = await cls.get_next_key(db)
+        if not key_obj:
+            # Нет ключей, возвращаем как есть
+            return []
+
+        system_prompt = """Ты — профессиональный аналитик отзывов и NLP-классификатор. Твоя задача — проанализировать список отзывов покупателей на FunPay и классифицировать каждый отзыв по тегам.
+Используй СТРОГО только следующие теги:
+- Положительные теги (радости): "⚡ Быстрая выдача", "🤝 Отличное общение", "💎 Отличное качество", "👍 Рекомендую"
+- Отрицательные теги (боли): "⏳ Долгое ожидание", "⚠️ Проблема с товаром", "❌ Игнор / Грубость", "👎 Плохой опыт"
+
+Для каждого отзыва выбери от 1 до 3 подходящих тегов из списка выше на основе семантики текста (даже если есть сарказм, скрытый смысл или сложные речевые обороты).
+Верни ответ СТРОГО в формате JSON: массив объектов, где каждый объект содержит "index" (номер отзыва, начиная с 0) и "tags" (список выбранных строк-тегов). Без лишних слов, без Markdown-разметки или backticks, только чистый JSON-массив.
+Пример ответа:
+[
+  {"index": 0, "tags": ["⚡ Быстрая выдача", "💎 Отличное качество"]},
+  {"index": 1, "tags": ["⏳ Долгое ожидание", "❌ Игнор / Грубость"]}
+]"""
+
+        user_input = ""
+        for idx, rev in enumerate(reviews):
+            text = rev.get("text", "") or "[без текста]"
+            user_input += f"Отзыв #{idx}:\nОценка: {rev.get('rating', 5)} звезд\nТекст: '{text}'\nТовар: '{rev.get('lot_info', '')}'\n\n"
+
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_input}
+        ]
+
+        candidate_models = [
+            "accounts/fireworks/models/qwen2p5-coder-32b-instruct",
+            "accounts/fireworks/models/llama-3-3-70b-instruct",
+            "accounts/fireworks/models/kimi-k2p5"
+        ]
+
+        max_attempts = 3
+        attempt = 0
+        reply = None
+
+        while attempt < max_attempts:
+            current_key = await cls.get_next_key(db)
+            if not current_key:
+                break
+                
+            for model in candidate_models:
+                try:
+                    response = await litellm.acompletion(
+                        model=model,
+                        custom_llm_provider="fireworks_ai",
+                        messages=messages,
+                        api_key=current_key.key_value,
+                        temperature=0.1, # Низкая температура для точного следования формату
+                        max_tokens=2000,
+                        timeout=40.0
+                    )
+                    reply = response.choices[0].message.content.strip()
+                    await cls.mark_success(db, current_key)
+                    break
+                except litellm.NotFoundError:
+                    continue
+                except Exception as e:
+                    logger.warning(f"Сбой пакетной классификации отзывов ИИ с ключом ID {current_key.id} для модели {model}: {str(e)}")
+                    break
+            
+            if reply:
+                break
+            
+            attempt += 1
+            await cls.mark_failure(db, current_key)
+
+        if not reply:
+            return []
+
+        # Парсим ответ ИИ
+        try:
+            # Очищаем от Markdown-блоков, если они вдруг есть
+            clean_reply = reply.strip()
+            if clean_reply.startswith("```json"):
+                clean_reply = clean_reply.replace("```json", "", 1)
+            if clean_reply.endswith("```"):
+                clean_reply = clean_reply.rsplit("```", 1)[0]
+            clean_reply = clean_reply.strip()
+
+            import json
+            classified_data = json.loads(clean_reply)
+            
+            # Сопоставляем обратно в список отзывов
+            for item in classified_data:
+                idx = item.get("index")
+                tags = item.get("tags", [])
+                if idx is not None and 0 <= idx < len(reviews):
+                    # Валидируем теги, чтобы ИИ не выдумал свои
+                    valid_allowed_tags = [
+                        "⚡ Быстрая выдача", "🤝 Отличное общение", "💎 Отличное качество", "👍 Рекомендую",
+                        "⏳ Долгое ожидание", "⚠️ Проблема с товаром", "❌ Игнор / Грубость", "👎 Плохой опыт"
+                    ]
+                    filtered_tags = [t for t in tags if t in valid_allowed_tags]
+                    if not filtered_tags:
+                        # Если пустые или невалидные, дадим по умолчанию
+                        rating = reviews[idx].get("rating", 5)
+                        filtered_tags = ["👍 Рекомендую"] if rating >= 4 else ["👎 Плохой опыт"]
+                    reviews[idx]["tags"] = filtered_tags
+            
+            return reviews
+        except Exception as e:
+            logger.error(f"Ошибка разбора JSON ответа ИИ при классификации отзывов: {str(e)}. Ответ ИИ был: {reply}")
+            return []

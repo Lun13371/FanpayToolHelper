@@ -95,3 +95,10 @@ async def init_db() -> None:
             await conn.execute(text("ALTER TABLE fanpay_accounts ADD COLUMN ai_audit_created_at TIMESTAMP"))
     except Exception:
         pass
+
+    # 8. reviews_cache
+    try:
+        async with engine.begin() as conn:
+            await conn.execute(text("ALTER TABLE fanpay_accounts ADD COLUMN reviews_cache JSON"))
+    except Exception:
+        pass

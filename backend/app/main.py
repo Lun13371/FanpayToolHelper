@@ -6,7 +6,8 @@ from app.database import init_db
 from app.services.scheduler import scheduler_manager
 from app.api.auth import router as auth_router
 from app.api.accounts import router as accounts_router
-from app.api.lots import router as lots_router
+from app.api.lots import router as lots_router, accounts_lots_router
+from app.api.analytics import router as analytics_router
 from app.api.lot_templates import router as templates_router
 from app.api.chats import router as chats_router
 from app.api.delivery import router as delivery_router
@@ -42,7 +43,9 @@ app.add_middleware(
 # Подключаем роуты REST API
 app.include_router(auth_router, prefix="/api/v1")
 app.include_router(accounts_router, prefix="/api/v1")
+app.include_router(analytics_router, prefix="/api/v1")
 app.include_router(lots_router, prefix="/api/v1")
+app.include_router(accounts_lots_router, prefix="/api/v1")
 app.include_router(templates_router, prefix="/api/v1")
 app.include_router(chats_router, prefix="/api/v1")
 app.include_router(delivery_router, prefix="/api/v1")
