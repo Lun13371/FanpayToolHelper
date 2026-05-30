@@ -14,11 +14,13 @@ interface AnalyticsSectionProps {
 }
 
 export default function AnalyticsSection({ setActiveSubTab, setGlobalMode }: AnalyticsSectionProps) {
-  const { token, selectedAccountId } = useAppContext();
+  const { token, selectedAccountId, accounts } = useAppContext();
+  const currentAccount = accounts.find(a => a.id === selectedAccountId);
 
   const [statsData, setStatsData] = useState<any>(null);
   const [statsLoading, setStatsLoading] = useState(false);
   const [chartPeriod, setChartPeriod] = useState<'week' | 'month' | 'year'>('week');
+  const [chartMode, setChartMode] = useState<'revenue' | 'equity'>('revenue');
   const [selectedRecommendation, setSelectedRecommendation] = useState<any>(null);
 
   // ИИ-Аудит
@@ -82,7 +84,7 @@ export default function AnalyticsSection({ setActiveSubTab, setGlobalMode }: Ana
     if (selectedAccountId && token) {
       fetchStats(selectedAccountId, 15);
     }
-  }, [selectedAccountId, token]);
+  }, [selectedAccountId, token, currentAccount?.last_synced]);
 
   // Запустить глубокий ИИ-Аудит
   const runAiAudit = async () => {
@@ -511,34 +513,62 @@ export default function AnalyticsSection({ setActiveSubTab, setGlobalMode }: Ana
             <div className="lg:col-span-7 p-5 sm:p-6 rounded-3xl glow-card relative" onMouseMove={handleMouseMove}>
               <div className="glow-bg rounded-3xl" />
               
-              <div className="flex items-center justify-between pb-2 border-b border-white/5 mb-6 relative z-10">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-white/5 mb-6 relative z-10">
                 <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider flex items-center gap-1.5">
                   <TrendingUp className="w-4 h-4 text-brand-cyan" />
-                  <span>Динамика продаж</span>
+                  <span>Динамика и тренд магазина</span>
                 </h3>
-                {/* Переключатель периодов графика */}
-                <div className="flex items-center gap-1 p-0.5 rounded-lg bg-slate-950/40 border border-white/5 text-[9px] font-bold shrink-0">
-                  {(['week', 'month', 'year'] as const).map((period) => (
+                
+                <div className="flex flex-wrap items-center gap-2">
+                  {/* Переключатель режимов */}
+                  <div className="flex items-center gap-1 p-0.5 rounded-lg bg-slate-950/40 border border-white/5 text-[9px] font-bold shrink-0">
                     <button
-                      key={period}
-                      onClick={() => setChartPeriod(period)}
+                      onClick={() => setChartMode('revenue')}
                       className={`py-1 px-2.5 rounded-md transition-all uppercase tracking-wider ${
-                        chartPeriod === period
+                        chartMode === 'revenue'
                           ? 'bg-brand-cyan/15 text-brand-cyan border border-brand-cyan/10'
                           : 'text-slate-400 hover:text-white border border-transparent'
                       }`}
                     >
-                      {period === 'week' && '7 дн.'}
-                      {period === 'month' && '30 дн.'}
-                      {period === 'year' && 'Год'}
+                      📊 Выручка
                     </button>
-                  ))}
+                    <button
+                      onClick={() => setChartMode('equity')}
+                      className={`py-1 px-2.5 rounded-md transition-all uppercase tracking-wider ${
+                        chartMode === 'equity'
+                          ? 'bg-brand-cyan/15 text-brand-cyan border border-brand-cyan/10'
+                          : 'text-slate-400 hover:text-white border border-transparent'
+                      }`}
+                    >
+                      📈 Капитал
+                    </button>
+                  </div>
+
+                  {/* Переключатель периодов графика */}
+                  <div className="flex items-center gap-1 p-0.5 rounded-lg bg-slate-950/40 border border-white/5 text-[9px] font-bold shrink-0">
+                    {(['week', 'month', 'year'] as const).map((period) => (
+                      <button
+                        key={period}
+                        onClick={() => setChartPeriod(period)}
+                        className={`py-1 px-2.5 rounded-md transition-all uppercase tracking-wider ${
+                          chartPeriod === period
+                            ? 'bg-brand-cyan/15 text-brand-cyan border border-brand-cyan/10'
+                            : 'text-slate-400 hover:text-white border border-transparent'
+                        }`}
+                      >
+                        {period === 'week' && '7 дн.'}
+                        {period === 'month' && '30 дн.'}
+                        {period === 'year' && 'Год'}
+                      </button>
+                    ))}
+                  </div>
                 </div>
               </div>
               
               {(() => {
                 const activeChartData = statsData?.chart_data?.[chartPeriod] || statsData?.daily_sales || [];
                 const maxRevenue = Math.max(...activeChartData.map((d: any) => d.revenue), 1);
+                const maxEquity = Math.max(...activeChartData.map((d: any) => d.cumulative_equity || d.revenue), 1);
                 
                 if (activeChartData.length === 0) {
                   return (
@@ -553,12 +583,18 @@ export default function AnalyticsSection({ setActiveSubTab, setGlobalMode }: Ana
                     {/* Сетка графика */}
                     <div className="flex items-end justify-between h-48 pt-6 px-1 border-b border-white/10 relative">
                       {activeChartData.map((day: any, idx: number) => {
-                        const percent = (day.revenue / maxRevenue) * 100;
+                        const val = chartMode === 'revenue' ? day.revenue : (day.cumulative_equity || day.revenue);
+                        const maxVal = chartMode === 'revenue' ? maxRevenue : maxEquity;
+                        const percent = (val / maxVal) * 100;
+                        
                         return (
                           <div key={idx} className="flex flex-col items-center flex-1 group h-full justify-end relative">
                             {/* Tooltip */}
                             <div className="absolute bottom-full mb-2 bg-slate-950/95 border border-white/10 text-white rounded-xl py-1.5 px-2 text-[9px] font-bold shadow-2xl opacity-0 group-hover:opacity-100 transition-all pointer-events-none z-50 text-center leading-normal shrink-0">
-                              <div className="text-brand-cyan font-extrabold">{day.revenue.toLocaleString('ru-RU')} ₽</div>
+                              <div className={chartMode === 'revenue' ? "text-brand-cyan font-extrabold" : "text-fuchsia-400 font-extrabold"}>
+                                {chartMode === 'revenue' ? 'Выручка: ' : 'Капитал: '}
+                                {val.toLocaleString('ru-RU')} ₽
+                              </div>
                               <div className="text-slate-400 mt-0.5">{day.count} зак.</div>
                             </div>
                             
@@ -567,7 +603,11 @@ export default function AnalyticsSection({ setActiveSubTab, setGlobalMode }: Ana
                               initial={{ height: '0%' }}
                               animate={{ height: `${percent}%` }}
                               transition={{ duration: 0.4, delay: Math.min(idx * 0.02, 0.5) }}
-                              className={`bg-gradient-to-t from-brand-blue/30 to-brand-cyan/80 hover:to-brand-cyan rounded-t transition-all shadow-lg hover:shadow-brand-cyan/20 cursor-pointer ${
+                              className={`rounded-t transition-all shadow-lg cursor-pointer ${
+                                chartMode === 'revenue'
+                                  ? 'bg-gradient-to-t from-brand-blue/30 to-brand-cyan/80 hover:to-brand-cyan hover:shadow-brand-cyan/20'
+                                  : 'bg-gradient-to-t from-violet-600/30 to-fuchsia-500/80 hover:to-fuchsia-400 hover:shadow-fuchsia-500/20'
+                              } ${
                                 chartPeriod === 'week' ? 'w-8 sm:w-10' :
                                 chartPeriod === 'month' ? 'w-1.5 sm:w-2.5 mx-0.5' :
                                 'w-6 sm:w-8'
@@ -978,6 +1018,73 @@ export default function AnalyticsSection({ setActiveSubTab, setGlobalMode }: Ana
                   </div>
                 </div>
 
+                {/* Семантическое облако тегов отзывов */}
+                {((statsData.reviews_stats.cloud_advantages && statsData.reviews_stats.cloud_advantages.length > 0) || 
+                  (statsData.reviews_stats.cloud_painpoints && statsData.reviews_stats.cloud_painpoints.length > 0)) && (
+                  <div className="mt-6 pt-5 border-t border-white/5 space-y-4 relative z-10 text-left">
+                    <h4 className="text-xs font-bold text-slate-400 uppercase tracking-wider flex items-center gap-1.5">
+                      <MessageSquare className="w-4 h-4 text-brand-cyan" />
+                      <span>Семантическое облако отзывов (Частотный NLP-анализ слов)</span>
+                    </h4>
+                    
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                      {/* Преимущества */}
+                      {statsData.reviews_stats.cloud_advantages && statsData.reviews_stats.cloud_advantages.length > 0 && (
+                        <div className="p-4 rounded-2xl bg-emerald-950/[0.01] border border-emerald-500/5 space-y-3">
+                          <span className="text-[9px] text-emerald-400 font-extrabold uppercase tracking-wider block">🟢 Облако комплиментов (Что хвалят покупатели)</span>
+                          <div className="flex flex-wrap gap-1.5 justify-start">
+                            {(() => {
+                              const maxVal = Math.max(...statsData.reviews_stats.cloud_advantages.map((x: any) => x.value), 1);
+                              return statsData.reviews_stats.cloud_advantages.map((word: any, wIdx: number) => {
+                                const minSize = 10;
+                                const maxSize = 15;
+                                const size = minSize + ((word.value / maxVal) * (maxSize - minSize));
+                                return (
+                                  <span
+                                    key={wIdx}
+                                    style={{ fontSize: `${size}px` }}
+                                    className="font-extrabold text-emerald-300/80 hover:text-emerald-300 bg-emerald-500/[0.03] px-2 py-0.5 rounded-lg border border-emerald-500/10 cursor-help transition-all duration-200 block shrink-0"
+                                    title={`Слово "${word.text}" встретилось в положительных отзывах ${word.value} раз`}
+                                  >
+                                    {word.text} <span className="opacity-40 font-normal text-[8px]">({word.value})</span>
+                                  </span>
+                                );
+                              });
+                            })()}
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Жалобы */}
+                      {statsData.reviews_stats.cloud_painpoints && statsData.reviews_stats.cloud_painpoints.length > 0 && (
+                        <div className="p-4 rounded-2xl bg-rose-950/[0.01] border border-rose-500/5 space-y-3">
+                          <span className="text-[9px] text-rose-400 font-extrabold uppercase tracking-wider block">🔴 Облако претензий (На что жалуются покупатели)</span>
+                          <div className="flex flex-wrap gap-1.5 justify-start">
+                            {(() => {
+                              const maxVal = Math.max(...statsData.reviews_stats.cloud_painpoints.map((x: any) => x.value), 1);
+                              return statsData.reviews_stats.cloud_painpoints.map((word: any, wIdx: number) => {
+                                const minSize = 10;
+                                const maxSize = 15;
+                                const size = minSize + ((word.value / maxVal) * (maxSize - minSize));
+                                return (
+                                  <span
+                                    key={wIdx}
+                                    style={{ fontSize: `${size}px` }}
+                                    className="font-extrabold text-rose-300/80 hover:text-rose-300 bg-rose-500/[0.03] px-2 py-0.5 rounded-lg border border-rose-500/10 cursor-help transition-all duration-200 block shrink-0"
+                                    title={`Слово "${word.text}" встретилось в отрицательных отзывах ${word.value} раз`}
+                                  >
+                                    {word.text} <span className="opacity-40 font-normal text-[8px]">({word.value})</span>
+                                  </span>
+                                );
+                              });
+                            })()}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
+
                 {/* Блок ИИ-выводов (Инсайт) */}
                 <div className="mt-5 p-3.5 rounded-2xl bg-white/[0.01] border border-white/5 flex flex-col sm:flex-row sm:items-center gap-3 text-left">
                   <div className="w-9 h-9 rounded-xl bg-brand-cyan/10 border border-brand-cyan/20 flex items-center justify-center text-brand-cyan shrink-0">
@@ -1129,6 +1236,193 @@ export default function AnalyticsSection({ setActiveSubTab, setGlobalMode }: Ana
                         );
                       });
                     })()}
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* АНАЛИЗ ВОЗВРАТОВ, СПОРОВ И КАТЕГОРИЙ */}
+          <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 relative z-10">
+            {/* Слева: Категориальный сплит (Sales by Category) */}
+            <div className="lg:col-span-5 p-5 sm:p-6 rounded-3xl glow-card relative" onMouseMove={handleMouseMove}>
+              <div className="glow-bg rounded-3xl" />
+              <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-6 relative z-10 pb-2 border-b border-white/5 flex items-center gap-1.5">
+                <Sliders className="w-4 h-4 text-brand-cyan" />
+                <span>Категориальный сплит продаж</span>
+              </h3>
+
+              {!statsData?.category_split && !statsData?.game_split ? (
+                <div className="py-12 text-center text-slate-500 italic relative z-10">
+                  Нет данных для анализа категорий.
+                </div>
+              ) : (
+                <div className="space-y-6 relative z-10">
+                  {/* Сплит по типам товаров */}
+                  {statsData?.category_split && statsData.category_split.length > 0 && (
+                    <div className="space-y-3">
+                      <span className="text-[9px] font-black text-slate-500 uppercase tracking-wider block">По типу товаров</span>
+                      <div className="space-y-2.5">
+                        {(() => {
+                          const totalRevenue = statsData.category_split.reduce((acc: number, item: any) => acc + item.revenue, 0) || 1;
+                          return statsData.category_split.map((item: any, idx: number) => {
+                            const percent = (item.revenue / totalRevenue) * 100;
+                            return (
+                              <div key={idx} className="space-y-1">
+                                <div className="flex items-center justify-between text-xs font-bold">
+                                  <span className="text-white flex items-center gap-1.5">
+                                    <span className="w-1.5 h-1.5 rounded-full bg-brand-cyan shrink-0" />
+                                    <span>{item.category}</span>
+                                  </span>
+                                  <span className="text-slate-400">
+                                    {item.count} шт. <span className="text-emerald-400 font-extrabold ml-1.5">{item.revenue.toLocaleString('ru-RU')} ₽</span>
+                                  </span>
+                                </div>
+                                <div className="h-1 bg-white/5 rounded-full overflow-hidden">
+                                  <motion.div
+                                    initial={{ width: '0%' }}
+                                    animate={{ width: `${percent}%` }}
+                                    transition={{ duration: 0.5, delay: idx * 0.05 }}
+                                    className="bg-brand-cyan h-full rounded-full"
+                                  />
+                                </div>
+                              </div>
+                            );
+                          });
+                        })()}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Сплит по игровым мирам */}
+                  {statsData?.game_split && statsData.game_split.length > 0 && (
+                    <div className="space-y-3 pt-3 border-t border-white/5">
+                      <span className="text-[9px] font-black text-slate-500 uppercase tracking-wider block">По игровым мирам (Топ-5)</span>
+                      <div className="space-y-2.5">
+                        {(() => {
+                          const topGames = statsData.game_split.slice(0, 5);
+                          const totalRevenue = topGames.reduce((acc: number, item: any) => acc + item.revenue, 0) || 1;
+                          return topGames.map((item: any, idx: number) => {
+                            const percent = (item.revenue / totalRevenue) * 100;
+                            return (
+                              <div key={idx} className="space-y-1">
+                                <div className="flex items-center justify-between text-xs font-bold">
+                                  <span className="text-white flex items-center gap-1.5">
+                                    <span className="w-1.5 h-1.5 rounded-full bg-indigo-400 shrink-0" />
+                                    <span>{item.game}</span>
+                                  </span>
+                                  <span className="text-slate-400">
+                                    {item.count} шт. <span className="text-emerald-400 font-extrabold ml-1.5">{item.revenue.toLocaleString('ru-RU')} ₽</span>
+                                  </span>
+                                </div>
+                                <div className="h-1 bg-white/5 rounded-full overflow-hidden">
+                                  <motion.div
+                                    initial={{ width: '0%' }}
+                                    animate={{ width: `${percent}%` }}
+                                    transition={{ duration: 0.5, delay: idx * 0.05 }}
+                                    className="bg-indigo-400 h-full rounded-full"
+                                  />
+                                </div>
+                              </div>
+                            );
+                          });
+                        })()}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+
+            {/* Справа: Трекер споров и возвратов (Refund & Dispute Tracker) */}
+            <div className="lg:col-span-7 p-5 sm:p-6 rounded-3xl glow-card relative" onMouseMove={handleMouseMove}>
+              <div className="glow-bg rounded-3xl" />
+              <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-6 relative z-10 pb-2 border-b border-white/5 flex items-center justify-between gap-2">
+                <div className="flex items-center gap-1.5">
+                  <AlertTriangle className="w-4 h-4 text-rose-500" />
+                  <span>Трекер возвратов средств и споров</span>
+                </div>
+                {statsData?.refund_stats?.refund_rate !== undefined && (
+                  <span className={`text-[9px] px-2.5 py-0.5 rounded-full font-black uppercase tracking-wider ${
+                    statsData.refund_stats.refund_rate > 5 
+                      ? 'bg-rose-500/10 border border-rose-500/20 text-rose-400'
+                      : statsData.refund_stats.refund_rate > 1
+                      ? 'bg-amber-500/10 border border-amber-500/20 text-amber-400'
+                      : 'bg-emerald-500/10 border border-emerald-500/20 text-emerald-400'
+                  }`}>
+                    Refund Rate: {statsData.refund_stats.refund_rate}%
+                  </span>
+                )}
+              </h3>
+
+              {!statsData?.refund_stats ? (
+                <div className="py-12 text-center text-slate-500 italic relative z-10">
+                  Нет данных для анализа возвратов.
+                </div>
+              ) : (
+                <div className="space-y-6 relative z-10">
+                  {/* Мини-панели показателей возвратов */}
+                  <div className="grid grid-cols-3 gap-3">
+                    <div className="p-3 rounded-2xl bg-white/[0.01] border border-white/5 text-center">
+                      <span className="text-[8px] font-extrabold text-slate-500 uppercase tracking-wider block">Refund Rate</span>
+                      <h4 className={`text-md sm:text-lg font-black mt-1 ${
+                        statsData.refund_stats.refund_rate > 5 ? 'text-rose-400' : 'text-emerald-400'
+                      }`}>
+                        {statsData.refund_stats.refund_rate}%
+                      </h4>
+                    </div>
+                    <div className="p-3 rounded-2xl bg-white/[0.01] border border-white/5 text-center" title="Количество возвратов/отмен заказов">
+                      <span className="text-[8px] font-extrabold text-slate-500 uppercase tracking-wider block">Возвраты (Отмены)</span>
+                      <h4 className="text-md sm:text-lg font-black text-rose-400 mt-1">
+                        {statsData.refund_stats.refunded_count} шт.
+                      </h4>
+                    </div>
+                    <div className="p-3 rounded-2xl bg-white/[0.01] border border-white/5 text-center" title="Количество оплаченных, но не подтвержденных заказов">
+                      <span className="text-[8px] font-extrabold text-slate-500 uppercase tracking-wider block">Открытые споры</span>
+                      <h4 className="text-md sm:text-lg font-black text-amber-400 mt-1">
+                        {statsData.refund_stats.pending_count} шт.
+                      </h4>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    {/* Топ проблемных лотов по возвратам */}
+                    <div className="p-3.5 rounded-2xl bg-rose-950/[0.01] border border-rose-500/5 space-y-2.5">
+                      <span className="text-[9px] font-black text-rose-400 uppercase tracking-wider block">⚠️ Проблемные товары (Возвраты)</span>
+                      {statsData.refund_stats.refunds_by_lot.length === 0 ? (
+                        <div className="text-[10px] text-slate-500 font-bold italic py-2">Возвраты по товарам отсутствуют. Отличный показатель!</div>
+                      ) : (
+                        <div className="space-y-1.5 max-h-[140px] overflow-y-auto pr-1 no-scrollbar text-left">
+                          {statsData.refund_stats.refunds_by_lot.map((lot: any, idx: number) => (
+                            <div key={idx} className="flex justify-between items-center text-[11px] font-bold py-1 border-b border-white/[0.02] last:border-0">
+                              <span className="text-slate-300 truncate max-w-[120px]" title={lot.name}>{lot.name}</span>
+                              <span className="text-rose-400 font-extrabold flex items-center gap-1 shrink-0">
+                                {lot.count} возвр. ({lot.revenue} ₽)
+                              </span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Лоты с активными спорами / ожиданиями подтверждения */}
+                    <div className="p-3.5 rounded-2xl bg-amber-950/[0.01] border border-amber-500/5 space-y-2.5">
+                      <span className="text-[9px] font-black text-amber-400 uppercase tracking-wider block">⏳ Ожидают подтверждения / В споре</span>
+                      {statsData.refund_stats.disputes_by_lot.length === 0 ? (
+                        <div className="text-[10px] text-slate-500 font-bold italic py-2">Все оплаченные заказы успешно подтверждены клиентами!</div>
+                      ) : (
+                        <div className="space-y-1.5 max-h-[140px] overflow-y-auto pr-1 no-scrollbar text-left">
+                          {statsData.refund_stats.disputes_by_lot.map((lot: any, idx: number) => (
+                            <div key={idx} className="flex justify-between items-center text-[11px] font-bold py-1 border-b border-white/[0.02] last:border-0">
+                              <span className="text-slate-300 truncate max-w-[120px]" title={lot.name}>{lot.name}</span>
+                              <span className="text-amber-400 font-extrabold flex items-center gap-1 shrink-0">
+                                {lot.count} шт. ({lot.revenue} ₽)
+                              </span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
                   </div>
                 </div>
               )}

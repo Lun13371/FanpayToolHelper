@@ -170,22 +170,24 @@ export default function FunpayManagerTab() {
     
     let progress = 5;
     const interval = setInterval(() => {
-      progress += Math.floor(Math.random() * 5) + 3;
-      if (progress > 93) {
-        progress = 93;
+      progress += Math.floor(Math.random() * 4) + 2;
+      if (progress > 95) {
+        progress = 95;
       }
       setSyncProgress(progress);
       
-      if (progress < 25) {
-        setSyncStepText('Этап 1/4: Проверка прокси-соединения...');
-      } else if (progress < 50) {
-        setSyncStepText('Этап 2/4: Безопасный вход на Funpay...');
-      } else if (progress < 75) {
-        setSyncStepText('Этап 3/4: Запрос баланса и отзывов...');
+      if (progress < 20) {
+        setSyncStepText('Этап 1/5: Проверка прокси-соединения...');
+      } else if (progress < 40) {
+        setSyncStepText('Этап 2/5: Безопасный вход на Funpay...');
+      } else if (progress < 60) {
+        setSyncStepText('Этап 3/5: Запрос баланса и отзывов...');
+      } else if (progress < 80) {
+        setSyncStepText('Этап 4/5: Сбор и кэширование активных лотов...');
       } else {
-        setSyncStepText('Этап 4/4: Сбор и кэширование активных лотов...');
+        setSyncStepText('Этап 5/5: Построение графиков, расчет возвратов и NLP слов...');
       }
-    }, 150);
+    }, 180);
 
     try {
       const res = await fetch(`${API_URL}/api/v1/accounts/${selectedAccountId}/sync-full`, {

@@ -205,6 +205,22 @@ async def sync_account_full(
         db.add(account)
         await db.commit()
         await db.refresh(account)
+
+        # 3. Синхронизируем и рассчитываем финансовую аналитику (выручка, возвраты, облако слов)
+        try:
+            from app.api.analytics import get_account_sales_stats
+            await get_account_sales_stats(
+                account_id=account.id,
+                pages=3,
+                force_refresh=True,
+                db=db,
+                current_user=current_user
+            )
+        except Exception as ae:
+            import logging
+            logging.getLogger("fanpay.api.lots").warning(
+                f"Не удалось обновить финансовую аналитику при глобальной синхронизации: {str(ae)}"
+            )
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Ошибка синхронизации: {str(e)}")
 

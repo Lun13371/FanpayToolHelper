@@ -1,9 +1,11 @@
 import logging
 import asyncio
+import json
+import re
 import httpx
 from bs4 import BeautifulSoup
 from datetime import datetime
-from typing import Any, List, Dict
+from typing import Any, List, Dict, Tuple
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
@@ -155,6 +157,83 @@ async def fetch_all_profile_reviews(user_id: str, client: FanpayClient, initial_
                     break
                 
     return all_reviews
+
+
+def get_date_obj(date_str: str) -> datetime:
+    try:
+        parts = date_str.split(".")
+        day = int(parts[0])
+        month = int(parts[1])
+        now_dt = datetime.now()
+        year = now_dt.year
+        # Если месяц заказа больше текущего месяца, то это, скорее всего, прошлый год
+        if month > now_dt.month:
+            year -= 1
+        return datetime(year, month, day)
+    except Exception:
+        return datetime(1970, 1, 1)
+
+
+def categorize_order(lot_name: str) -> Tuple[str, str]:
+    name_lower = lot_name.lower()
+    
+    # 1. Определение категории
+    category = "Другое"
+    
+    currency_keywords = [
+        "золото", "gold", "валют", "серебро", "монет", "гемы", "алмаз", "gems", "кристалл", "coins", 
+        "points", "поинты", "песо", "дюп", "кинары", "адена", "adena", "юани", "е-пин", "в-баксы", 
+        "v-bucks", "vbucks", "робукс", "robux", "роблокс", "сфер", "плат", "платин", "plat", "platinum", "дукаты"
+    ]
+    accounts_keywords = [
+        "аккаунт", "акк", "acc", "account", "личный", "продам акк", "steam", "стим", "epic", "эпик", 
+        "перепривязка", "почт", "mail", "supercell", "суперселл", "ранг", "уровень", "lvl", "level", 
+        "ключ", "key", "лиценз", "gift", "гифт", "код", "code", "активац", "подписк", "sub"
+    ]
+    services_keywords = [
+        "услуг", "service", "буст", "boost", "прокач", "кач", "рейд", "raid", "прохожд", "помощ", 
+        "help", "обучен", "coach", "фарм", "farm", "калибров", "ранг", "rank", "поднятие", "арена", 
+        "arena", "pve", "pvp"
+    ]
+    
+    if any(kw in name_lower for kw in currency_keywords):
+        category = "Валюта"
+    elif any(kw in name_lower for kw in services_keywords):
+        category = "Услуги"
+    elif any(kw in name_lower for kw in accounts_keywords):
+        category = "Аккаунты"
+        
+    # 2. Определение игры
+    game = "Другие игры"
+    
+    games_map = {
+        "Brawl Stars": ["brawl stars", "брэвл", "бравл", "bs", "supercell"],
+        "Roblox": ["roblox", "роблокс", "робукс", "robux"],
+        "Genshin Impact": ["genshin", "геншин"],
+        "World of Warcraft": ["world of warcraft", "wow", "вов"],
+        "Dota 2": ["dota", "дота"],
+        "CS2 / CS:GO": ["cs2", "cs:go", "csgo", "кс2", "кс го", "кс:го"],
+        "Minecraft": ["minecraft", "майнкрафт", "майн"],
+        "GTA Online": ["gta", "гта", "fivem"],
+        "Fortnite": ["fortnite", "фортнайт"],
+        "League of Legends": ["league of legends", "lol", "лига легенд", "лига"],
+        "Mobile Legends": ["mobile legends", "mlbb", "мобайл легенд"],
+        "Valorant": ["valorant", "валорант"],
+        "Clash of Clans": ["clash of clans", "clash royale", "клеш"],
+        "PUBG": ["pubg", "пабг", "пубг"],
+        "Standoff 2": ["standoff", "стандофф"],
+        "Honkai: Star Rail": ["honkai", "hsr", "хонкай"],
+        "Steam": ["steam", "стим"],
+        "Telegram": ["telegram", "тг"],
+        "Discord": ["discord", "дискорд"]
+    }
+    
+    for game_name, keywords in games_map.items():
+        if any(kw in name_lower for kw in keywords):
+            game = game_name
+            break
+            
+    return game, category
 
 
 router = APIRouter(prefix="/accounts", tags=["Аналитика Аккаунтов"])
@@ -313,27 +392,53 @@ async def get_account_sales_stats(
     daily_summary = {}  # date -> {"count": int, "revenue": float}
     recent_completed_sales = []
 
-    for o in completed_orders:
-        if o["is_completed"]:
-            price = o["price"]
-            revenue_total += price
-            completed_count += 1
-            
-            # Статистика по лотам
-            name = o["lot_name"]
-            if name not in lots_summary:
-                lots_summary[name] = {"count": 0, "revenue": 0.0}
-            lots_summary[name]["count"] += 1
-            lots_summary[name]["revenue"] += price
+    # Сортируем все заказы по дате хронологически (от старых к новым) для накопительного подсчета
+    completed_sales_chronological = [o for o in completed_orders if o["is_completed"]]
+    completed_sales_chronological.sort(key=lambda x: get_date_obj(x["date"]))
 
-            # Статистика по дням
-            dt = o["date"]
-            if dt not in daily_summary:
-                daily_summary[dt] = {"count": 0, "revenue": 0.0}
-            daily_summary[dt]["count"] += 1
-            daily_summary[dt]["revenue"] += price
+    # 1. Сплит продаж по категориям и играм
+    category_split = {}  # category -> {"revenue": float, "count": int}
+    game_split = {}      # game -> {"revenue": float, "count": int}
 
-            recent_completed_sales.append(o)
+    running_cumulative_equity = 0.0
+    for o in completed_sales_chronological:
+        price = o["price"]
+        revenue_total += price
+        completed_count += 1
+        running_cumulative_equity += price
+        o["cumulative_equity"] = round(running_cumulative_equity, 2)
+        
+        # Статистика по лотам
+        name = o["lot_name"]
+        if name not in lots_summary:
+            lots_summary[name] = {"count": 0, "revenue": 0.0}
+        lots_summary[name]["count"] += 1
+        lots_summary[name]["revenue"] += price
+
+        # Статистика по дням
+        dt = o["date"]
+        if dt not in daily_summary:
+            daily_summary[dt] = {"count": 0, "revenue": 0.0}
+        daily_summary[dt]["count"] += 1
+        daily_summary[dt]["revenue"] += price
+
+        # Сплит по категориям
+        game, category = categorize_order(name)
+        if category not in category_split:
+            category_split[category] = {"revenue": 0.0, "count": 0}
+        category_split[category]["revenue"] += price
+        category_split[category]["count"] += 1
+
+        # Сплит по играм
+        if game not in game_split:
+            game_split[game] = {"revenue": 0.0, "count": 0}
+        game_split[game]["revenue"] += price
+        game_split[game]["count"] += 1
+
+        recent_completed_sales.append(o)
+
+    # Список последних продаж (обратная хронология)
+    recent_completed_sales_desc = list(reversed(recent_completed_sales))
 
     # Форматируем лоты для фронтенда и сортируем по популярности (count desc)
     top_lots = [
@@ -342,20 +447,19 @@ async def get_account_sales_stats(
     ]
     top_lots.sort(key=lambda x: x["count"], reverse=True)
 
-    # Форматируем дни для фронтенда и сортируем хронологически
-    daily_sales = [
-        {"date": k, "count": v["count"], "revenue": round(v["revenue"], 2)}
-        for k, v in daily_summary.items()
-    ]
-    
-    # Сортируем дни
-    def sort_key(item):
-        try:
-            parts = item["date"].split(".")
-            return int(parts[1]), int(parts[0])
-        except Exception:
-            return 0, 0
-    daily_sales.sort(key=sort_key)
+    # Сортируем дни хронологически и добавляем cumulative_equity
+    sorted_days = sorted(daily_summary.keys(), key=get_date_obj)
+    daily_sales = []
+    running_equity = 0.0
+    for d in sorted_days:
+        rev = daily_summary[d]["revenue"]
+        running_equity += rev
+        daily_sales.append({
+            "date": d,
+            "count": daily_summary[d]["count"],
+            "revenue": round(rev, 2),
+            "cumulative_equity": round(running_equity, 2)
+        })
 
     average_ticket = round(revenue_total / completed_count, 2) if completed_count > 0 else 0.0
 
@@ -423,7 +527,7 @@ async def get_account_sales_stats(
     csat_percentage = round((five_star_reviews / total_parsed_reviews) * 100, 1) if total_parsed_reviews > 0 else 100.0
 
     # Ограничиваем список последних продаж 10 записями
-    recent_completed_sales = recent_completed_sales[:10]
+    recent_completed_sales = recent_completed_sales_desc[:10]
 
     # Считаем дни в простое на основе последней совершенной сделки
     idle_days = -1
@@ -450,26 +554,130 @@ async def get_account_sales_stats(
         "07": "Июл", "08": "Авг", "09": "Сен", "10": "Окт", "11": "Ноя", "12": "Дек"
     }
     yearly_summary = {}
-    for o in completed_orders:
-        if o["is_completed"]:
-            dt_str = o["date"]
-            try:
-                m_num = dt_str.split(".")[1]
-                m_lbl = month_names.get(m_num, "Янв")
-                if m_lbl not in yearly_summary:
-                    yearly_summary[m_lbl] = {"count": 0, "revenue": 0.0}
-                yearly_summary[m_lbl]["count"] += 1
-                yearly_summary[m_lbl]["revenue"] += o["price"]
-            except Exception:
-                pass
-                
+    for o in completed_sales_chronological:
+        dt_str = o["date"]
+        try:
+            m_num = dt_str.split(".")[1]
+            m_lbl = month_names.get(m_num, "Янв")
+            if m_lbl not in yearly_summary:
+                yearly_summary[m_lbl] = {"count": 0, "revenue": 0.0}
+            yearly_summary[m_lbl]["count"] += 1
+            yearly_summary[m_lbl]["revenue"] += o["price"]
+        except Exception:
+            pass
+            
     month_order = ["Янв", "Фев", "Мар", "Апр", "Май", "Июн", "Июл", "Авг", "Сен", "Окт", "Ноя", "Дек"]
-    sales_year = [
-        {"date": m, "count": yearly_summary[m]["count"], "revenue": round(yearly_summary[m]["revenue"], 2)}
-        for m in month_order if m in yearly_summary
+    sales_year = []
+    running_monthly_equity = 0.0
+    for m in month_order:
+        if m in yearly_summary:
+            m_rev = yearly_summary[m]["revenue"]
+            running_monthly_equity += m_rev
+            sales_year.append({
+                "date": m,
+                "count": yearly_summary[m]["count"],
+                "revenue": round(m_rev, 2),
+                "cumulative_equity": round(running_monthly_equity, 2)
+            })
+
+    # 4. Трекер споров и возвратов (Refund Rate)
+    total_orders_parsed = len(completed_orders)
+    refunded_orders = [o for o in completed_orders if o.get("is_refunded")]
+    pending_orders = [o for o in completed_orders if o.get("is_pending")]
+    
+    refunded_count = len(refunded_orders)
+    pending_count = len(pending_orders)
+    refund_rate = round((refunded_count / total_orders_parsed) * 100, 2) if total_orders_parsed > 0 else 0.0
+    
+    refunds_by_lot = {}
+    for o in refunded_orders:
+        name = o["lot_name"]
+        if name not in refunds_by_lot:
+            refunds_by_lot[name] = {"count": 0, "revenue": 0.0}
+        refunds_by_lot[name]["count"] += 1
+        refunds_by_lot[name]["revenue"] += o["price"]
+        
+    disputes_by_lot = {}
+    for o in pending_orders:
+        name = o["lot_name"]
+        if name not in disputes_by_lot:
+            disputes_by_lot[name] = {"count": 0, "revenue": 0.0}
+        disputes_by_lot[name]["count"] += 1
+        disputes_by_lot[name]["revenue"] += o["price"]
+        
+    top_refunded_lots = [
+        {"name": k, "count": v["count"], "revenue": round(v["revenue"], 2)}
+        for k, v in refunds_by_lot.items()
+    ]
+    top_refunded_lots.sort(key=lambda x: x["count"], reverse=True)
+    
+    top_disputed_lots = [
+        {"name": k, "count": v["count"], "revenue": round(v["revenue"], 2)}
+        for k, v in disputes_by_lot.items()
+    ]
+    top_disputed_lots.sort(key=lambda x: x["count"], reverse=True)
+
+    refund_stats = {
+        "total_orders": total_orders_parsed,
+        "refunded_count": refunded_count,
+        "pending_count": pending_count,
+        "refund_rate": refund_rate,
+        "refunds_by_lot": top_refunded_lots[:10],
+        "disputes_by_lot": top_disputed_lots[:10]
+    }
+
+    # 5. Категориальный сплит
+    formatted_category_split = [
+        {"category": k, "revenue": round(v["revenue"], 2), "count": v["count"]}
+        for k, v in category_split.items()
+    ]
+    formatted_category_split.sort(key=lambda x: x["revenue"], reverse=True)
+    
+    formatted_game_split = [
+        {"game": k, "revenue": round(v["revenue"], 2), "count": v["count"]}
+        for k, v in game_split.items()
+    ]
+    formatted_game_split.sort(key=lambda x: x["revenue"], reverse=True)
+
+    # 6. Семантическое облако тегов отзывов
+    positive_words = {}
+    negative_words = {}
+    
+    russian_stopwords = {
+        "и", "в", "во", "не", "что", "он", "на", "я", "с", "со", "как", "а", "то", "все", "она", "так", "его", "но", 
+        "да", "ты", "к", "у", "же", "вы", "за", "бы", "по", "только", "ее", "мне", "было", "вот", "от", "меня", "еще", 
+        "нет", "о", "из", "ему", "теперь", "когда", "даже", "вдруг", "ли", "если", "уже", "или", "ни", "быть", "был", 
+        "него", "до", "вас", "нибудь", "опять", "уж", "вам", "ведь", "там", "потом", "себя", "ничего", "ей", "может", 
+        "они", "тут", "где", "есть", "надо", "ней", "для", "мы", "тебя", "их", "чем", "была", "сам", "чтоб", "без", 
+        "будто", "чего", "раз", "тоже", "себе", "под", "будет", "ж", "тогда", "кто", "этот", "того", "потому", "этого", 
+        "какой", "совсем", "ним", "здесь", "этом", "один", "почти", "мой", "тем", "чтобы", "нее", "сейчас", "были", 
+        "куда", "зачем", "всех", "никогда", "можно", "при", "наконец", "два", "об", "другой", "хоть", "после", "над", 
+        "больше", "тот", "через", "эти", "нас", "про", "всего", "них", "какая", "много", "разве", "три", "эту", "моя", 
+        "впрочем", "хорошо", "свою", "этой", "перед", "иногда", "лучше", "чуть", "том", "нельзя", "такой", "им", "более", 
+        "всегда", "конечно", "всю", "между", "good", "nice", "very", "seller", "fast", "thanks", "thank", "you", "deal"
+    }
+    
+    for r in recent_reviews:
+        text = r.get("text", "")
+        rating_val = r.get("rating", 5)
+        words = re.findall(r'[а-яёa-z]+', text.lower())
+        
+        target_dict = positive_words if rating_val >= 4 else negative_words
+        
+        for w in words:
+            if len(w) > 3 and w not in russian_stopwords:
+                target_dict[w] = target_dict.get(w, 0) + 1
+                
+    cloud_advantages = [
+        {"text": k, "value": v}
+        for k, v in sorted(positive_words.items(), key=lambda x: x[1], reverse=True)[:25]
+    ]
+    cloud_painpoints = [
+        {"text": k, "value": v}
+        for k, v in sorted(negative_words.items(), key=lambda x: x[1], reverse=True)[:25]
     ]
 
-    # 5. ИИ-Прогнозирование продаж (Sales Forecasting)
+    # 7. ИИ-Прогнозирование продаж (Sales Forecasting)
     recs_len = len(daily_sales)
     revenue_w1 = 0.0  # Последние 7 дней
     revenue_w2 = 0.0  # Предыдущие 7 дней
@@ -547,6 +755,9 @@ async def get_account_sales_stats(
             "year": sales_year
         },
         "recent_sales": recent_completed_sales,
+        "refund_stats": refund_stats,
+        "category_split": formatted_category_split,
+        "game_split": formatted_game_split,
         "reviews_stats": {
             "average_rating": account.rating or 0.0,
             "total_reviews": account.reviews_count or 0,
@@ -555,7 +766,9 @@ async def get_account_sales_stats(
             "tags_summary": [
                 {"tag": k, "count": v, "is_negative": is_tag_negative(k)}
                 for k, v in tags_count.items()
-            ]
+            ],
+            "cloud_advantages": cloud_advantages,
+            "cloud_painpoints": cloud_painpoints
         },
         "loyalty_stats": {
             "unique_buyers": unique_buyers,
