@@ -24,47 +24,72 @@ def classify_review_nlp(text: str, rating: int) -> List[str]:
     text_lower = text.lower() if text else ""
     tags = []
     
-    # 1. Положительные теги (только для хороших оценок 4-5 или если в тексте явный позитив)
+    # 1. Положительные теги (для хороших оценок >= 4 или если в тексте явный позитив)
     if rating >= 4:
         # Быстрая выдача
-        fast_keywords = ["быстр", "момент", "секунд", "сразу", "fast", "instant", "минут", "мгновен", "скоро"]
+        fast_keywords = [
+            "быстр", "момент", "секунд", "сразу", "fast", "instant", "минут", 
+            "мгновен", "скоро", "шустр", "мигом", "вручил", "сверхбыстр", 
+            "быстренько", "speed", "milli", "sec"
+        ]
         if any(kw in text_lower for kw in fast_keywords):
             tags.append("⚡ Быстрая выдача")
             
         # Вежливость и общение
-        comm_keywords = ["вежлив", "приятн", "помог", "подсказ", "объясн", "адекватн", "общен", "ответил", "консульт", "вежливы"]
+        comm_keywords = [
+            "вежлив", "приятн", "помог", "подсказ", "объясн", "адекватн", "общен", 
+            "ответил", "консульт", "добр", "терпелив", "красавчик", "расписал", 
+            "поддерж", "встреч", "компромисс", "человек", "вежливы", "friendly", 
+            "nice guy", "общительн"
+        ]
         if any(kw in text_lower for kw in comm_keywords):
             tags.append("🤝 Отличное общение")
             
-        # Цена/качество
-        price_keywords = ["дешев", "цена", "качеств", "рабоч", "рекоменд", "супер", "класс", "топ", "лучш", "nice", "good", "cheap", "качественно"]
-        if any(kw in text_lower for kw in price_keywords) or not text_lower:
-            # Если отзыв пустой и 5 звезд, то это по умолчанию хорошее качество/рекомендация
+        # Цена/качество / работоспособность
+        quality_keywords = [
+            "дешев", "цена", "качеств", "рабоч", "рекоменд", "супер", "класс", 
+            "топ", "лучш", "nice", "good", "cheap", "качественно", "имба", 
+            "имбо", "прекрасн", "отличн", "работает", "спс", "спасибо", "гуд", 
+            "best", "perfect", "ок", "ok", "rep", "крут", "разобрался", "сэпэсэ", 
+            "норм", "work", "cool"
+        ]
+        if any(kw in text_lower for kw in quality_keywords) or not text_lower:
             tags.append("💎 Отличное качество")
             
         if not tags:
             # Дефолтный тег для хороших оценок
             tags.append("👍 Рекомендую")
             
-    # 2. Отрицательные теги
-    # Долгое ожидание
-    slow_keywords = ["долг", "ждал", "ожидан", "медлен", "час", "сутк", "день", "slow", "wait", "задерж"]
-    if any(kw in text_lower for kw in slow_keywords) and (rating <= 3 or "но " in text_lower or "жда" in text_lower):
-        tags.append("⏳ Долгое ожидание")
-        
-    # Проблема с товаром
-    invalid_keywords = ["невалид", "нерабоч", "не работа", "ошибк", "брак", "слетел", "проблем", "invalid", "error", "not working", "не тот", "обман", "скам", "кидал", "вернули", "восстановил"]
-    if any(kw in text_lower for kw in invalid_keywords):
-        tags.append("⚠️ Проблема с товаром")
-        
-    # Игнор / поддержка
-    ignore_keywords = ["игнор", "не отвеча", "молч", "поддерж", "нахамил", "грубы", "хам", "ignore", "безответ"]
-    if any(kw in text_lower for kw in ignore_keywords):
-        tags.append("❌ Игнор / Грубость")
-        
-    # Если оценка 1-3 и никаких тегов не определилось
-    if rating <= 3 and not any(t in tags for t in ["⏳ Долгое ожидание", "⚠️ Проблема с товаром", "❌ Игнор / Грубость"]):
-        tags.append("👎 Плохой опыт")
+    # 2. Отрицательные теги (строго для плохих оценок <= 3, так как при оценках 4-5 любой инцидент считается успешно решенным)
+    elif rating <= 3:
+        # Долгое ожидание
+        slow_keywords = [
+            "долг", "ждал", "ожидан", "медлен", "час", "сутк", "день", "slow", 
+            "wait", "задерж", "опоздал"
+        ]
+        if any(kw in text_lower for kw in slow_keywords):
+            tags.append("⏳ Долгое ожидание")
+            
+        # Проблема с товаром
+        invalid_keywords = [
+            "невалид", "нерабоч", "не работа", "ошибк", "брак", "слетел", 
+            "проблем", "invalid", "error", "not working", "не тот", "обман", 
+            "скам", "кидал", "вернули", "восстановил", "бан", "забан", "не приш"
+        ]
+        if any(kw in text_lower for kw in invalid_keywords):
+            tags.append("⚠️ Проблема с товаром")
+            
+        # Игнор / поддержка
+        ignore_keywords = [
+            "игнор", "не отвеча", "молч", "поддерж", "нахамил", "грубы", 
+            "хам", "ignore", "безответ", "груб"
+        ]
+        if any(kw in text_lower for kw in ignore_keywords):
+            tags.append("❌ Игнор / Грубость")
+            
+        # Если оценка 1-3 и никаких тегов не определилось
+        if not tags:
+            tags.append("👎 Плохой опыт")
         
     return tags
 
@@ -73,7 +98,7 @@ def is_tag_negative(tag: str) -> bool:
     return tag in ["⏳ Долгое ожидание", "⚠️ Проблема с товаром", "❌ Игнор / Грубость", "👎 Плохой опыт"]
 
 
-async def fetch_all_profile_reviews(http_client: httpx.AsyncClient, user_id: str, client: FanpayClient, initial_html: str) -> List[Dict[str, Any]]:
+async def fetch_all_profile_reviews(user_id: str, client: FanpayClient, initial_html: str) -> List[Dict[str, Any]]:
     """
     Парсит первую страницу профиля и затем рекурсивно догружает абсолютно ВСЕ отзывы с помощью AJAX-запросов (JS имитация).
     """
@@ -81,44 +106,53 @@ async def fetch_all_profile_reviews(http_client: httpx.AsyncClient, user_id: str
     csrf_token = client._extract_csrf_token(initial_html)
     all_reviews = parse_profile_reviews(initial_html)
     
-    # 2. Находим первоначальный токен продолжения reviews
+    # 2. Находим первоначальный токен продолжения reviews (внутри input name='continue')
     soup = BeautifulSoup(initial_html, "html.parser")
-    more_btn = soup.find("button", class_="btn-more") or soup.find("a", class_="btn-more")
-    next_reviews_token = more_btn.get("data-next") if more_btn else None
+    continue_input = soup.find("input", {"name": "continue"})
+    next_reviews_token = continue_input.get("value") if continue_input else None
     
     # Если у нас есть csrf_token и next_reviews_token, грузим больше отзывов по AJAX
     if csrf_token and next_reviews_token and user_id:
-        # Ограничимся 10 дополнительными AJAX-запросами (около 300-400 отзывов)
-        for _ in range(10):
-            try:
-                ajax_resp = await http_client.post(
-                    "https://funpay.com/users/reviews",
-                    data={
-                        "user": int(user_id),
-                        "next": int(next_reviews_token),
-                        "section": "seller",
-                        "csrf_token": csrf_token
-                    },
-                    headers={"X-Requested-With": "XMLHttpRequest"}
-                )
-                if ajax_resp.status_code == 200:
-                    res_data = ajax_resp.json()
-                    ajax_html = res_data.get("html", "")
-                    next_reviews_token = res_data.get("next")
-                    
-                    if ajax_html:
-                        ajax_revs = parse_profile_reviews(ajax_html)
-                        if not ajax_revs:
+        async with client._get_client() as http_client:
+            # Ограничимся 30 дополнительными AJAX-запросами (около 800-1000 отзывов)
+            for _ in range(30):
+                try:
+                    ajax_resp = await http_client.post(
+                        "https://funpay.com/users/reviews",
+                        data={
+                            "user_id": int(user_id) if user_id else 0,
+                            "continue": next_reviews_token,
+                            "filter": "",
+                            "csrf_token": csrf_token
+                        },
+                        headers={
+                            "X-Requested-With": "XMLHttpRequest",
+                            "Content-Type": "application/x-www-form-urlencoded"
+                        }
+                    )
+                    if ajax_resp.status_code == 200:
+                        ajax_html = ajax_resp.text
+                        
+                        if ajax_html:
+                            ajax_revs = parse_profile_reviews(ajax_html)
+                            if not ajax_revs:
+                                break
+                            all_reviews.extend(ajax_revs)
+                            
+                            # Находим следующий токен продолжения из HTML ответа
+                            soup_ajax = BeautifulSoup(ajax_html, "html.parser")
+                            continue_input_ajax = soup_ajax.find("input", {"name": "continue"})
+                            next_reviews_token = continue_input_ajax.get("value") if continue_input_ajax else None
+                        else:
                             break
-                        all_reviews.extend(ajax_revs)
-                    
-                    if not next_reviews_token:
+                        
+                        if not next_reviews_token:
+                            break
+                    else:
                         break
-                else:
+                except Exception as ex:
+                    logger.warning(f"Ошибка при AJAX загрузке отзывов: {str(ex)}")
                     break
-            except Exception as ex:
-                logger.warning(f"Ошибка при AJAX загрузке отзывов: {str(ex)}")
-                break
                 
     return all_reviews
 
@@ -128,12 +162,14 @@ router = APIRouter(prefix="/accounts", tags=["Аналитика Аккаунт�
 @router.get("/{account_id}/sales-stats")
 async def get_account_sales_stats(
     account_id: int,
-    pages: int = 3,  # По умолчанию загружаем 3 страницы истории продаж
+    pages: int = 3,
+    force_refresh: bool = False,
     db: AsyncSession = Depends(get_session),
     current_user: User = Depends(get_current_user)
 ) -> Any:
     """
     Получает детальную статистику продаж аккаунта непосредственно с Funpay (с использованием асинхронного парсера).
+    Использует кэш БД, если не задан флаг force_refresh.
     """
     account = await db.get(FanpayAccount, account_id)
     if not account:
@@ -142,7 +178,33 @@ async def get_account_sales_stats(
     # Проверка прав доступа
     await verify_account_access(db, current_user, account_id)
 
+    # Если в базе данных уже есть сохраненный кэш финансовой аналитики и не требуется принудительное обновление, возвращаем МГНОВЕННО!
+    if not force_refresh and account.sales_stats_cache:
+        logger.info(f"Возвращаем кэшированную финансовую статистику из БД для аккаунта {account_id}")
+        return account.sales_stats_cache
+
     client = FanpayClient(account.golden_key, account.proxy_url, account.user_agent, account.cookies)
+    # Сбрасываем куки до чистой сессии golden_key, чтобы предотвратить конфликты CSRF/PHPSESSID при AJAX загрузке
+    client.cookies = {"golden_key": client.golden_key}
+    
+    # Если funpay_user_id не задан в БД, определяем его на лету с главной страницы
+    if not account.funpay_user_id:
+        try:
+            async with client._get_client() as http_client:
+                main_resp = await http_client.get("https://funpay.com/")
+                if main_resp.status_code == 200:
+                    soup = BeautifulSoup(main_resp.text, "html.parser")
+                    body = soup.find("body")
+                    if body and body.has_attr("data-app-data"):
+                        app_data = json.loads(body.get("data-app-data"))
+                        user_id = str(app_data.get("userId"))
+                        if user_id:
+                            account.funpay_user_id = user_id
+                            db.add(account)
+                            await db.commit()
+                            await db.refresh(account)
+        except Exception as e:
+            logger.warning(f"Не удалось получить user_id с главной страницы: {e}")
     
     orders_htmls = []
     profile_resp = None
@@ -170,9 +232,9 @@ async def get_account_sales_stats(
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Ошибка подключения к FunPay: {str(e)}")
 
-        # Загружаем дополнительные страницы последовательно с использованием continue-токена
+        # Загружаем дополнительные страницы последовательно с использованием continue-токена до самого конца (все страницы!)
         current_html = resp.text
-        for _ in range(1, pages):
+        while True:
             soup = BeautifulSoup(current_html, "html.parser")
             continue_input = soup.find("input", {"type": "hidden", "name": "continue"})
             continue_token = continue_input.get("value") if continue_input else None
@@ -213,7 +275,7 @@ async def get_account_sales_stats(
     }
     
     if profile_resp and profile_resp.status_code == 200:
-        parsed_revs = await fetch_all_profile_reviews(http_client, account.funpay_user_id, client, profile_resp.text)
+        parsed_revs = await fetch_all_profile_reviews(account.funpay_user_id, client, profile_resp.text)
         
         for r in parsed_revs:
             rating_val = r["rating"]
@@ -472,7 +534,7 @@ async def get_account_sales_stats(
     key_obj = await AIService.get_next_key(db)
     ai_key_exists = bool(key_obj)
 
-    return {
+    stats_data = {
         "revenue_total": round(revenue_total, 2),
         "completed_count": completed_count,
         "average_ticket": average_ticket,
@@ -488,7 +550,7 @@ async def get_account_sales_stats(
         "reviews_stats": {
             "average_rating": account.rating or 0.0,
             "total_reviews": account.reviews_count or 0,
-            "recent_reviews": recent_reviews[:15],
+            "recent_reviews": recent_reviews,
             "distribution": reviews_distribution,
             "tags_summary": [
                 {"tag": k, "count": v, "is_negative": is_tag_negative(k)}
@@ -519,6 +581,14 @@ async def get_account_sales_stats(
         "ai_key_exists": ai_key_exists
     }
 
+    # Сохраняем вычисленные данные в кэш БД для мгновенной последующей загрузки
+    account.sales_stats_cache = stats_data
+    db.add(account)
+    await db.commit()
+    await db.refresh(account)
+
+    return stats_data
+
 
 @router.post("/{account_id}/recalculate-reviews-ai")
 async def recalculate_reviews_ai(
@@ -542,6 +612,8 @@ async def recalculate_reviews_ai(
         raise HTTPException(status_code=400, detail="Ключи ИИ отсутствуют или деактивированы. Пожалуйста, добавьте рабочий ключ во вкладке 'Ключи ИИ'.")
 
     client = FanpayClient(account.golden_key, account.proxy_url, account.user_agent, account.cookies)
+    # Сбрасываем куки до чистой сессии golden_key, чтобы предотвратить конфликты CSRF/PHPSESSID при AJAX загрузке
+    client.cookies = {"golden_key": client.golden_key}
     
     async with client._get_client() as http_client:
         try:
@@ -554,7 +626,7 @@ async def recalculate_reviews_ai(
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Ошибка соединения с FunPay: {str(e)}")
 
-    parsed_revs = await fetch_all_profile_reviews(http_client, account.funpay_user_id, client, resp.text)
+    parsed_revs = await fetch_all_profile_reviews(account.funpay_user_id, client, resp.text)
     if not parsed_revs:
         return {"success": True, "message": "На странице профиля нет отзывов для анализа.", "reviews_stats": None}
 
@@ -586,6 +658,9 @@ async def recalculate_reviews_ai(
             
         recent_reviews.append(r)
 
+    # Сбрасываем кэш скомпилированной статистики, чтобы при следующем заходе на страницу она сгенерировалась заново с новыми ИИ-отзывами
+    account.sales_stats_cache = None
+
     # Обновляем кэш в базе данных
     account.reviews_cache = recent_reviews
     db.add(account)
@@ -597,7 +672,7 @@ async def recalculate_reviews_ai(
         "reviews_stats": {
             "average_rating": account.rating or 0.0,
             "total_reviews": account.reviews_count or 0,
-            "recent_reviews": recent_reviews[:15],
+            "recent_reviews": recent_reviews,
             "distribution": reviews_distribution,
             "tags_summary": [
                 {"tag": k, "count": v, "is_negative": is_tag_negative(k)}

@@ -31,6 +31,19 @@ export default function AnalyticsSection({ setActiveSubTab, setGlobalMode }: Ana
 
   const [recalculatingReviews, setRecalculatingReviews] = useState(false);
 
+  // Фильтрация отзывов
+  const [ratingFilter, setRatingFilter] = useState<number | 'all'>('all');
+  const [tagFilter, setTagFilter] = useState<string | 'all'>('all');
+  const [reviewsSearch, setReviewsSearch] = useState<string>('');
+  const [visibleCount, setVisibleCount] = useState<number>(5);
+
+  useEffect(() => {
+    setRatingFilter('all');
+    setTagFilter('all');
+    setReviewsSearch('');
+    setVisibleCount(5);
+  }, [selectedAccountId, statsData]);
+
   const recsContainerRef = useRef<HTMLDivElement>(null);
 
   // Скролл колесом мыши для списка рекомендаций
@@ -48,10 +61,10 @@ export default function AnalyticsSection({ setActiveSubTab, setGlobalMode }: Ana
   }, [statsData]);
 
   // Загрузка статистики
-  const fetchStats = async (accId: number, depthPages: number = 15) => {
+  const fetchStats = async (accId: number, depthPages: number = 15, forceRefresh: boolean = false) => {
     setStatsLoading(true);
     try {
-      const res = await fetch(`${API_URL}/api/v1/accounts/${accId}/sales-stats?pages=${depthPages}`, {
+      const res = await fetch(`${API_URL}/api/v1/accounts/${accId}/sales-stats?pages=${depthPages}&force_refresh=${forceRefresh}`, {
         headers: { Authorization: `Bearer ${token}` }
       });
       if (res.ok) {
@@ -333,6 +346,24 @@ export default function AnalyticsSection({ setActiveSubTab, setGlobalMode }: Ana
     return recs;
   };
 
+  const allReviews = statsData?.reviews_stats?.recent_reviews || [];
+  
+  // Фильтрация отзывов в реальном времени
+  const filteredReviews = allReviews.filter((rev: any) => {
+    if (ratingFilter !== 'all' && rev.rating !== ratingFilter) return false;
+    if (tagFilter !== 'all' && (!rev.tags || !rev.tags.includes(tagFilter))) return false;
+    if (reviewsSearch) {
+      const searchLower = reviewsSearch.toLowerCase();
+      const buyerMatch = rev.buyer?.toLowerCase().includes(searchLower);
+      const textMatch = rev.text?.toLowerCase().includes(searchLower);
+      const lotMatch = rev.lot_info?.toLowerCase().includes(searchLower);
+      if (!buyerMatch && !textMatch && !lotMatch) return false;
+    }
+    return true;
+  });
+
+  const displayedReviews = filteredReviews.slice(0, visibleCount);
+
   return (
     <motion.div
       key="tab_analytics"
@@ -362,7 +393,7 @@ export default function AnalyticsSection({ setActiveSubTab, setGlobalMode }: Ana
             
             <div className="flex items-center gap-3 relative z-10 shrink-0">
               <button
-                onClick={() => selectedAccountId && fetchStats(selectedAccountId, 15)}
+                onClick={() => selectedAccountId && fetchStats(selectedAccountId, 15, true)}
                 disabled={statsLoading}
                 className="py-2 px-4 rounded-xl text-[10px] font-black uppercase tracking-wider bg-brand-cyan text-slate-950 hover:bg-brand-cyan/90 transition-all flex items-center gap-1.5 hover:shadow-md hover:shadow-brand-cyan/25 disabled:opacity-50 disabled:pointer-events-none"
                 title="Обновить данные с FunPay"
@@ -680,73 +711,137 @@ export default function AnalyticsSection({ setActiveSubTab, setGlobalMode }: Ana
               )}
             </div>
 
-            {/* Справа: Свежие отзывы */}
+            {/* Справа: Отзывы */}
             <div className="lg:col-span-8 p-5 sm:p-6 rounded-3xl glow-card relative" onMouseMove={handleMouseMove}>
               <div className="glow-bg rounded-3xl" />
-              <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-5 pb-2 border-b border-white/5 flex items-center gap-1.5 relative z-10">
-                <MessageSquare className="w-4 h-4 text-brand-cyan" />
-                <span>Свежие отзывы покупателей с Funpay</span>
-              </h3>
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-5 pb-2 border-b border-white/5 relative z-10">
+                <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider flex items-center gap-1.5">
+                  <MessageSquare className="w-4 h-4 text-brand-cyan" />
+                  <span>Отзывы покупателей с Funpay</span>
+                </h3>
+                
+                {/* Фильтры в один ряд */}
+                <div className="flex flex-wrap items-center gap-2">
+                  <input
+                    type="text"
+                    placeholder="Поиск..."
+                    value={reviewsSearch}
+                    onChange={(e) => { setReviewsSearch(e.target.value); setVisibleCount(5); }}
+                    className="bg-slate-950/60 border border-white/5 rounded-xl py-1 px-2.5 text-[10px] font-bold text-white focus:outline-none focus:border-brand-cyan/40 placeholder:text-slate-600 w-24 sm:w-32"
+                  />
+                  
+                  <select
+                    value={ratingFilter}
+                    onChange={(e) => { setRatingFilter(e.target.value === 'all' ? 'all' : parseInt(e.target.value)); setVisibleCount(5); }}
+                    className="bg-slate-950/60 border border-white/5 rounded-xl py-1 px-2 text-[10px] font-bold text-slate-400 focus:outline-none focus:border-brand-cyan/40 cursor-pointer"
+                  >
+                    <option value="all" className="bg-slate-950 text-white">Все оценки</option>
+                    {[5, 4, 3, 2, 1].map((star) => (
+                      <option key={star} value={star} className="bg-slate-950 text-white">
+                        {star} ★
+                      </option>
+                    ))}
+                  </select>
+
+                  {statsData?.reviews_stats?.tags_summary && (
+                    <select
+                      value={tagFilter}
+                      onChange={(e) => { setTagFilter(e.target.value); setVisibleCount(5); }}
+                      className="bg-slate-950/60 border border-white/5 rounded-xl py-1 px-2 text-[10px] font-bold text-slate-400 focus:outline-none focus:border-brand-cyan/40 cursor-pointer max-w-[130px]"
+                    >
+                      <option value="all" className="bg-slate-950 text-white">Все теги</option>
+                      {statsData.reviews_stats.tags_summary.map((t: any) => (
+                        <option key={t.tag} value={t.tag} className="bg-slate-950 text-white">
+                          {t.tag} ({t.count})
+                        </option>
+                      ))}
+                    </select>
+                  )}
+                </div>
+              </div>
 
               {(!statsData?.reviews_stats?.recent_reviews || statsData.reviews_stats.recent_reviews.length === 0) ? (
                 <div className="py-12 text-center text-slate-500 italic relative z-10">
                   Отзывы с текстом на странице не найдены.
                 </div>
+              ) : filteredReviews.length === 0 ? (
+                <div className="py-12 text-center text-slate-500 italic relative z-10">
+                  По заданным фильтрам отзывов не найдено.
+                </div>
               ) : (
-                <div className="space-y-3.5 max-h-[310px] overflow-y-auto pr-1 relative z-10 no-scrollbar">
-                  {statsData.reviews_stats.recent_reviews.map((rev: any, idx: number) => (
-                    <div key={idx} className="p-3 rounded-2xl bg-white/[0.01] border border-white/5 space-y-2 hover:bg-white/[0.02] transition-all">
-                      <div className="flex items-center justify-between text-[11px]">
-                        <div className="flex items-center gap-2">
-                          <div className="w-6 h-6 rounded-lg bg-brand-cyan/10 border border-brand-cyan/25 flex items-center justify-center text-brand-cyan font-black uppercase text-[10px]">
-                            {rev.buyer.slice(0, 2)}
+                <div className="space-y-4">
+                  <div className="space-y-3.5 max-h-[380px] overflow-y-auto pr-1 relative z-10 no-scrollbar">
+                    {displayedReviews.map((rev: any, idx: number) => (
+                      <div key={idx} className="p-3 rounded-2xl bg-white/[0.01] border border-white/5 space-y-2 hover:bg-white/[0.02] transition-all">
+                        <div className="flex items-center justify-between text-[11px]">
+                          <div className="flex items-center gap-2">
+                            <div className="w-6 h-6 rounded-lg bg-brand-cyan/10 border border-brand-cyan/25 flex items-center justify-center text-brand-cyan font-black uppercase text-[10px]">
+                              {rev.buyer.slice(0, 2)}
+                            </div>
+                            <span className="text-white font-extrabold">{rev.buyer}</span>
                           </div>
-                          <span className="text-white font-extrabold">{rev.buyer}</span>
+                          <span className="text-slate-500 font-bold">{rev.date}</span>
                         </div>
-                        <span className="text-slate-500 font-bold">{rev.date}</span>
-                      </div>
-                      
-                      <div className="flex flex-wrap items-center gap-2">
-                        <div className="flex items-center gap-0.5">
-                          {Array.from({ length: 5 }).map((_, i) => (
-                            <Star
-                              key={i}
-                              className={`w-3.5 h-3.5 ${
-                                i < rev.rating ? 'text-amber-400 fill-current' : 'text-slate-700'
-                              }`}
-                            />
-                          ))}
-                        </div>
-                        {rev.lot_info && (
-                          <span className="text-[9px] bg-white/5 text-slate-400 border border-white/5 px-2 py-0.5 rounded-md font-bold uppercase tracking-wider truncate max-w-[280px]" title={rev.lot_info}>
-                            {rev.lot_info}
-                          </span>
-                        )}
-                        {/* NLP-Теги */}
-                        {rev.tags && rev.tags.map((tag: string, tIdx: number) => {
-                          const isNeg = tag.includes('⏳') || tag.includes('⚠️') || tag.includes('❌') || tag.includes('👎');
-                          return (
-                            <span 
-                              key={tIdx} 
-                              className={`text-[8px] font-black uppercase tracking-wider px-2 py-0.5 rounded-md border shrink-0 ${
-                                isNeg 
-                                  ? 'bg-rose-500/10 border-rose-500/20 text-rose-400' 
-                                  : 'bg-emerald-500/10 border-emerald-500/20 text-emerald-400'
-                              }`}
-                            >
-                              {tag}
+                        
+                        <div className="flex flex-wrap items-center gap-2">
+                          <div className="flex items-center gap-0.5">
+                            {Array.from({ length: 5 }).map((_, i) => (
+                              <Star
+                                key={i}
+                                className={`w-3.5 h-3.5 ${
+                                  i < rev.rating ? 'text-amber-400 fill-current' : 'text-slate-700'
+                                }`}
+                              />
+                            ))}
+                          </div>
+                          {rev.lot_info && (
+                            <span className="text-[9px] bg-white/5 text-slate-400 border border-white/5 px-2 py-0.5 rounded-md font-bold uppercase tracking-wider truncate max-w-[280px]" title={rev.lot_info}>
+                              {rev.lot_info}
                             </span>
-                          );
-                        })}
-                      </div>
+                          )}
+                          {/* NLP-Теги */}
+                          {rev.tags && rev.tags.map((tag: string, tIdx: number) => {
+                            const isNeg = tag.includes('⏳') || tag.includes('⚠️') || tag.includes('❌') || tag.includes('👎');
+                            return (
+                              <span 
+                                key={tIdx} 
+                                className={`text-[8px] font-black uppercase tracking-wider px-2 py-0.5 rounded-md border shrink-0 ${
+                                  isNeg 
+                                    ? 'bg-rose-500/10 border-rose-500/20 text-rose-400' 
+                                    : 'bg-emerald-500/10 border-emerald-500/20 text-emerald-400'
+                                }`}
+                              >
+                                {tag}
+                              </span>
+                            );
+                          })}
+                        </div>
 
-                      {rev.text && (
-                        <p className="text-slate-300 text-xs font-semibold leading-relaxed pl-1 italic">
-                          «{rev.text}»
-                        </p>
-                      )}
-                    </div>
-                  ))}
+                        {rev.text && (
+                          <p className="text-slate-300 text-xs font-semibold leading-relaxed pl-1 italic">
+                            «{rev.text}»
+                          </p>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+
+                  {/* Кнопка Показать еще и счетчики */}
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pt-3 border-t border-white/5 relative z-10">
+                    <span className="text-[9px] text-slate-500 font-extrabold uppercase tracking-wider">
+                      Показано {displayedReviews.length} из {filteredReviews.length} отзывов
+                      {filteredReviews.length < allReviews.length && ` (отфильтровано из ${allReviews.length})`}
+                    </span>
+                    
+                    {filteredReviews.length > displayedReviews.length && (
+                      <button
+                        onClick={() => setVisibleCount(prev => prev + 5)}
+                        className="py-1.5 px-4 bg-white/5 hover:bg-white/10 border border-white/5 hover:border-white/10 rounded-xl text-[9px] font-bold text-slate-300 hover:text-white transition-all uppercase tracking-wider"
+                      >
+                        Показать еще
+                      </button>
+                    )}
+                  </div>
                 </div>
               )}
             </div>
