@@ -142,44 +142,67 @@ class AIService:
                     ]
                 })
 
-        # Модели по умолчанию
-        # Если есть скриншот, берем Qwen-VL от Fireworks, если просто текст - Llama 3 70B Instruct
-        model = (
+        # Модели по умолчанию для текстовых запросов (в порядке приоритета)
+        text_models = [
+            "fireworks_ai/accounts/fireworks/models/gpt-oss-120b",            # GPT OSS 120B (очень дешевая, активна на ключе)
+            "fireworks_ai/accounts/fireworks/models/kimi-k2p6",               # Kimi K2.6 (активна на ключе)
+            "fireworks_ai/accounts/fireworks/models/deepseek-v4-pro",         # DeepSeek V4 Pro (активна на ключе)
+            "fireworks_ai/accounts/fireworks/models/kimi-k2p5",               # Kimi K2.5 (активна на ключе)
+            "fireworks_ai/accounts/fireworks/models/glm-5p1",                 # GLM 5P1 (активна на ключе)
+            "fireworks_ai/accounts/fireworks/models/llama-v3p3-70b-instruct", # Llama 3.3 70B (резерв)
+            "fireworks_ai/accounts/fireworks/models/llama-v3p1-8b-instruct"   # Llama 3.1 8B (резерв)
+        ]
+        
+        vision_models = [
             "fireworks_ai/accounts/fireworks/models/qwen2-5-vl-72b-instruct"
-            if screenshot_base64 else
-            "fireworks_ai/accounts/fireworks/models/llama-v3p1-70b-instruct"
-        )
+        ]
+        
+        candidate_models = vision_models if screenshot_base64 else text_models
 
         while attempt < max_attempts:
             key_obj = await cls.get_next_key(db)
             if not key_obj:
                 raise RuntimeError("Нет активных ключей ИИ в базе данных")
                 
-            try:
-                # Настраиваем API ключ для вызова
-                # LiteLLM берет ключ из переменной окружения или передается через api_key
-                response = await litellm.acompletion(
-                    model=model,
-                    messages=messages,
-                    api_key=key_obj.key_value,
-                    temperature=0.7,
-                    max_tokens=800,
-                    timeout=30.0
-                )
-                
-                # Извлекаем текст ответа
-                reply = response.choices[0].message.content.strip()
-                
-                # Фиксируем успех ключа
-                await cls.mark_success(db, key_obj)
-                return reply
-                
-            except Exception as e:
+            # Пробуем кандидат-модели по очереди
+            for model in candidate_models:
+                try:
+                    logger.info(f"Запрос к ИИ (ID ключа: {key_obj.id}) с моделью {model}...")
+                    response = await litellm.acompletion(
+                        model=model,
+                        messages=messages,
+                        api_key=key_obj.key_value,
+                        temperature=0.7,
+                        max_tokens=3000,
+                        timeout=30.0
+                    )
+                    
+                    # Извлекаем текст ответа
+                    reply = response.choices[0].message.content.strip()
+                    
+                    # Фиксируем успех ключа
+                    await cls.mark_success(db, key_obj)
+                    return reply
+                    
+                except litellm.NotFoundError as e:
+                    # Если модель не найдена на этом провайдере/аккаунте, пробуем следующую
+                    logger.warning(f"Модель {model} не найдена или не развернута: {str(e)}. Пробуем следующую из списка...")
+                    continue
+                except Exception as e:
+                    # Если другая ошибка (неверный ключ, лимиты), фиксируем сбой ключа и выходим из цикла моделей, чтобы взять другой ключ!
+                    logger.warning(f"Сбой вызова ИИ с ключом ID {key_obj.id} для модели {model}: {str(e)}")
+                    break
+            else:
+                # Если все модели из списка выдали NotFoundError, засчитываем попытку ключа и идем на следующий круг
                 attempt += 1
-                logger.warning(f"Ошибка вызова ИИ с ключом ID {key_obj.id}: {str(e)}")
                 await cls.mark_failure(db, key_obj)
+                continue
                 
-        raise RuntimeError("Превышено количество попыток запроса к ИИ. Все выбранные ключи дали сбой.")
+            # Сюда попадаем, если вышли по break (ошибка ключа, а не модели)
+            attempt += 1
+            await cls.mark_failure(db, key_obj)
+                
+        raise RuntimeError("Превышено количество попыток запроса к ИИ. Все выбранные ключи и модели дали сбой.")
 
     @classmethod
     async def mark_success(cls, db: AsyncSession, key: AIKey):

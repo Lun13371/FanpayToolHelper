@@ -112,18 +112,19 @@ class SchedulerManager:
             if not account or not account.is_active:
                 return
 
-            # Добавляем случайную задержку (гуманизация задержек от 10 до 120 секунд), чтобы не палиться
-            import asyncio
-            delay = random.randint(10, 120)
-            await asyncio.sleep(delay)
-
             client = FanpayClient(account.golden_key, account.proxy_url, account.user_agent, account.cookies)
             success, msg = await client.raise_offers()
             
             if success:
-                await self.add_log(db, account_id, f"Автоподнятие: {msg}")
+                account.last_raised = datetime.utcnow()
+                db.add(account)
+                await db.commit()
+                await self.add_log(db, account_id, f"Автоподнятие лотов завершено успешно: {msg}")
             else:
                 await self.add_log(db, account_id, f"Ошибка автоподнятия лотов: {msg}", "WARNING")
+        
+        # Планируем следующее умное поднятие (база 4 часа + случайная задержка 1-60 минут)
+        await self.schedule_next_raise(account_id, initial=False)
 
     async def job_autodelivery_and_ai(self, account_id: int):
         """Задача: Автовыдача товаров, сбор отзывов и умные ИИ-ответы."""
@@ -495,11 +496,67 @@ class SchedulerManager:
         self.active_jobs[key] = job.id
         logger.info(f"Следующая полная синхронизация для аккаунта {account_id} запланирована на {run_time.strftime('%Y-%m-%d %H:%M:%S')}")
 
+    async def schedule_next_raise(self, account_id: int, initial: bool = False):
+        """Умно планирует следующее поднятие лотов с учетом 4-часового кулдауна и рандомной задержки от 1 до 60 минут."""
+        key = f"account_{account_id}_raise"
+        if key in self.active_jobs:
+            try:
+                self.scheduler.remove_job(self.active_jobs[key])
+            except Exception:
+                pass
+            del self.active_jobs[key]
+
+        async with async_session_maker() as db:
+            account = await db.get(FanpayAccount, account_id)
+            if not account or not account.is_active:
+                return
+
+            delay_seconds = 5 # Дефолт при первом запуске без кулдауна
+            
+            if initial:
+                # Если запуск первый раз, проверим когда было последнее успешное поднятие
+                if account.last_raised:
+                    elapsed = datetime.utcnow() - account.last_raised
+                    cooldown_rem = timedelta(hours=4) - elapsed
+                    if cooldown_rem.total_seconds() > 0:
+                        # Кулдаун еще идет! Планируем запуск сразу по окончанию + рандом 1-60 минут
+                        delay_seconds = cooldown_rem.total_seconds() + random.randint(60, 3600)
+                    else:
+                        # Кулдаун прошел, запускаем почти сразу (через 10-60 сек)
+                        delay_seconds = random.randint(10, 60)
+                else:
+                    # Ни разу не поднимали, запускаем через 5 секунд
+                    delay_seconds = 5
+            else:
+                # Если поднятие только что завершилось, планируем на 4 часа + рандом 1-60 минут
+                delay_seconds = 240 * 60 + random.randint(60, 3600)
+
+            run_time = datetime.now() + timedelta(seconds=delay_seconds)
+            run_time_utc = datetime.utcnow() + timedelta(seconds=delay_seconds)
+            
+            # Записываем точное время следующего запуска в БД (в формате UTC)
+            account.next_raise = run_time_utc
+            db.add(account)
+            await db.commit()
+
+            # Добавляем задачу в планировщик
+            job = self.scheduler.add_job(
+                self.job_raise_lots,
+                trigger='date',
+                run_date=run_time,
+                args=[account_id],
+                id=key
+            )
+            self.active_jobs[key] = job.id
+            
+            formatted_time = run_time_utc.strftime("%Y-%m-%d %H:%M:%S")
+            await self.add_log(db, account_id, f"Следующее умное поднятие запланировано на {formatted_time} UTC (кулдаун 4ч + рандом).")
+
     # =========================================================================
     # УПРАВЛЕНИЕ ЖИЗНЕННЫМ ЦИКЛОМ ДЖОБ
     # =========================================================================
 
-    def register_account_jobs(self, account_id: int):
+    async def register_account_jobs(self, account_id: int):
         """
         Регистрирует и запускает все фоновые задачи для указанного аккаунта.
         Удаляет старые джобы перед созданием новых, чтобы исключить дублирование.
@@ -515,14 +572,8 @@ class SchedulerManager:
         )
         self.active_jobs[f"account_{account_id}_online"] = job_online.id
 
-        # 2. Автоподнятие предложений (каждые 2 часа)
-        job_raise = self.scheduler.add_job(
-            self.job_raise_lots,
-            trigger=IntervalTrigger(hours=2),
-            args=[account_id],
-            id=f"account_{account_id}_raise"
-        )
-        self.active_jobs[f"account_{account_id}_raise"] = job_raise.id
+        # 2. Умное автоподнятие предложений (база 4 часа кулдауна + рандомная задержка 1-60 минут)
+        await self.schedule_next_raise(account_id, initial=True)
 
         # 3. Автовыдача и ИИ-автоответчик (каждые 20 секунд)
         job_delivery = self.scheduler.add_job(
@@ -586,7 +637,7 @@ class SchedulerManager:
             active_accounts = res.scalars().all()
             
             for acc in active_accounts:
-                self.register_account_jobs(acc.id)
+                await self.register_account_jobs(acc.id)
                 await self.add_log(db, acc.id, "Бот активирован и фоновые процессы запущены в планировщике.")
 
 # Глобальный инстанс менеджера задач

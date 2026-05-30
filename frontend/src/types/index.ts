@@ -21,6 +21,7 @@ export interface FanpayAccount {
   reviews_count?: number;
   last_raised?: string;
   last_synced?: string;
+  next_raise?: string;
   telegram_chat_id?: string;
   lots_cache?: any[];
   created_at: string;

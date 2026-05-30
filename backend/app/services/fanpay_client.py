@@ -304,8 +304,13 @@ class FanpayClient:
                         order_id = id_div.text.strip() if id_div else None
                         
                         # Название лота
-                        title_div = row.find(class_="tc-title")
-                        lot_name = title_div.text.strip() if title_div else "Неизвестный лот"
+                        order_desc_div = row.find(class_="order-desc")
+                        if order_desc_div:
+                            desc_inner = order_desc_div.find("div")
+                            lot_name = desc_inner.text.strip() if desc_inner else order_desc_div.text.strip()
+                        else:
+                            title_div = row.find(class_="tc-desc-text") or row.find(class_="tc-desc") or row.find(class_="tc-title")
+                            lot_name = title_div.text.strip() if title_div else "Неизвестный лот"
                         # Убираем лишние пробелы и переносы
                         lot_name = re.sub(r'\s+', ' ', lot_name)
 
@@ -646,25 +651,56 @@ class FanpayClient:
                         p_soup = BeautifulSoup(prof_resp.text, "html.parser")
                         html_text = prof_resp.text
                         
-                        # 1. Парсинг рейтинга (Оценка) через регулярный поиск "X из 5"
-                        rating_match = re.search(r"([\d.]+)\s+(?:из|out of)\s+5", html_text, re.IGNORECASE)
-                        if rating_match:
-                            try:
-                                stats["rating"] = float(rating_match.group(1))
-                                logger.info(f"Синхронизация профиля: спарсили рейтинг (из 5): {stats['rating']}")
-                            except ValueError:
-                                pass
-                        else:
-                            # Фаллбек: Ищем точечно в class="rating-mini" или "big-rating"
+                        # 1. Парсинг точного рейтинга (Оценка) из класса rating-value (самый точный способ)
+                        rating_div = p_soup.find(class_=re.compile(r"\brating-value\b", re.I))
+                        if rating_div:
+                            rating_text = rating_div.text.strip().replace(",", ".")
+                            num_match = re.search(r"([\d.]+)", rating_text)
+                            if num_match:
+                                try:
+                                    stats["rating"] = float(num_match.group(1))
+                                    logger.info(f"Синхронизация профиля: спарсили точный рейтинг из rating-value: {stats['rating']}")
+                                except ValueError:
+                                    pass
+
+                        # Фаллбек 1: Если класса rating-value нет, ищем регулярным выражением
+                        if stats["rating"] == 0.0:
+                            rating_match = re.search(r"([\d.]+)\s*(?:из|out of)\s*5", html_text, re.IGNORECASE)
+                            if rating_match:
+                                try:
+                                    stats["rating"] = float(rating_match.group(1))
+                                    logger.info(f"Синхронизация профиля: фаллбек регулярки спарсил рейтинг: {stats['rating']}")
+                                except ValueError:
+                                    pass
+
+                        # Фаллбек 2: Ищем точечно в class="rating-mini" или "big-rating"
+                        if stats["rating"] == 0.0:
                             rating_span = p_soup.find(class_="rating-mini") or p_soup.find(class_="big-rating")
                             if rating_span:
                                 try:
                                     r_val = re.sub(r"[^\d.]", "", rating_span.text.strip())
                                     if r_val:
                                         stats["rating"] = float(r_val)
-                                        logger.info(f"Синхронизация профиля: фаллбек спарсил рейтинг: {stats['rating']}")
+                                        logger.info(f"Синхронизация профиля: фаллбек спарсил рейтинг из rating-mini: {stats['rating']}")
                                 except ValueError:
                                     pass
+
+                        # Если рейтинг всё еще 0.0 (например, на сайте стоит "? из 5"),
+                        # рассчитываем средний балл по реальным звездам из последних отзывов на странице,
+                        # строго игнорируя фильтры отзывов в шапке
+                        if stats["rating"] == 0.0:
+                            review_items = p_soup.find_all(class_=re.compile(r"review-item-rating|review-item", re.I))
+                            stars = []
+                            for item in review_items:
+                                star_el = item.find(class_=re.compile(r"rating[1-5]", re.I))
+                                if star_el:
+                                    for cls in star_el.get("class", []):
+                                        m = re.match(r"^rating([1-5])$", cls, re.IGNORECASE)
+                                        if m:
+                                            stars.append(int(m.group(1)))
+                            if stars:
+                                stats["rating"] = round(sum(stars) / len(stars), 2)
+                                logger.info(f"Синхронизация профиля: рейтинг рассчитан по звездам последних отзывов: {stats['rating']}")
 
                         # 2. Парсинг количества отзывов по ссылке #reviews
                         reviews_link = p_soup.find("a", href=re.compile(r"#reviews"))
@@ -750,19 +786,51 @@ class FanpayClient:
                                 amount_val = int(amount_match.group(1))
                                 
                         category_name = "Другое"
-                        parent = row.find_parent(class_=re.compile(r"tc-subcategory|yours-offers|tc-wrapper|user-profile|container", re.I))
+                        parent = row.find_parent(class_=re.compile(r"^(offer|mb20|tc-subcategory|yours-offers)$", re.I))
                         if parent:
-                            hdr = parent.find(class_=re.compile(r"tc-header|tc-title|game-title|mb15|page-header", re.I))
+                            # 1. Сначала ищем h3, h5, h4, h2 заголовки, где лежит реальное название игры/категории
+                            hdr = parent.find(["h3", "h5", "h4", "h2"])
                             if hdr:
-                                category_name = hdr.text.strip()
-                        category_name = category_name.split("\n")[0].strip()
+                                # Находим подкатегорию (обычно внутри span с классом text-muted или просто span)
+                                sub_el = hdr.find("span", class_="text-muted") or hdr.find("span")
+                                sub_name = sub_el.text.strip() if sub_el else ""
+                                
+                                # Находим название игры (внутри ссылки <a> или как текст заголовка)
+                                game_el = hdr.find("a")
+                                if game_el:
+                                    game_name = game_el.text.strip()
+                                else:
+                                    # Если ссылки нет, вычитаем текст подкатегории из полного текста
+                                    game_name = hdr.text.replace(sub_name, "").strip() if sub_name else hdr.text.strip()
+                                    
+                                # Чистим лишние пробелы и переносы
+                                game_name = re.sub(r'\s+', ' ', game_name).strip()
+                                sub_name = re.sub(r'\s+', ' ', sub_name).strip()
+                                
+                                if game_name and sub_name:
+                                    category_name = f"{game_name} / {sub_name}"
+                                elif game_name:
+                                    category_name = game_name
+                                else:
+                                    category_name = hdr.text.strip().split("\n")[0].strip()
+                            else:
+                                # 2. Фаллбек на случай если заголовков нет, но есть класс tc-header (игнорируем если там написано 'Описание')
+                                hdr_el = parent.find(class_=re.compile(r"tc-header|tc-title|game-title", re.I))
+                                if hdr_el and "описание" not in hdr_el.text.lower() and "description" not in hdr_el.text.lower():
+                                    category_name = hdr_el.text.strip().split("\n")[0].strip()
+
+                        # Проверяем наличие значка молнии (встроенной автовыдачи) на самом Funpay
+                        has_native_delivery = False
+                        if row.find("span", class_="lightning") or row.find("i", class_=re.compile(r"lightning|flash", re.I)) or "⚡" in row.text:
+                            has_native_delivery = True
 
                         lots.append({
                             "lot_id": lot_id,
                             "lot_name": lot_name,
                             "price": price_val,
                             "amount": amount_val,
-                            "category": category_name
+                            "category": category_name,
+                            "native_auto_delivery": has_native_delivery
                         })
                     return lots
                 else:

@@ -44,22 +44,54 @@ async def init_db() -> None:
 
         await conn.run_sync(SQLModel.metadata.create_all)
         
-        # Добавляем колонки динамически, если таблица уже существует
-        from sqlalchemy import text
-        try:
-            await conn.execute(text("ALTER TABLE fanpay_accounts ADD COLUMN IF NOT EXISTS ip_address VARCHAR(255)"))
-            await conn.execute(text("ALTER TABLE fanpay_accounts ADD COLUMN IF NOT EXISTS geo_location VARCHAR(255)"))
-            
-            # Добавляем колонки кэша и времени синхронизации
-            try:
-                await conn.execute(text("ALTER TABLE fanpay_accounts ADD COLUMN last_synced TIMESTAMP"))
-            except Exception:
-                pass # Колонка уже существует
-                
-            try:
-                await conn.execute(text("ALTER TABLE fanpay_accounts ADD COLUMN lots_cache JSON"))
-            except Exception:
-                pass # Колонка уже существует
-        except Exception as e:
-            import logging
-            logging.getLogger("fanpay.db").error(f"Ошибка при ALTER TABLE для гео-данных/синхронизации: {e}")
+    # Добавляем колонки динамически, каждая в СВОЕЙ изолированной транзакции
+    from sqlalchemy import text
+    
+    # 1. ip_address
+    try:
+        async with engine.begin() as conn:
+            await conn.execute(text("ALTER TABLE fanpay_accounts ADD COLUMN ip_address VARCHAR(255)"))
+    except Exception:
+        pass # Колонка уже существует или другая ошибка
+        
+    # 2. geo_location
+    try:
+        async with engine.begin() as conn:
+            await conn.execute(text("ALTER TABLE fanpay_accounts ADD COLUMN geo_location VARCHAR(255)"))
+    except Exception:
+        pass
+        
+    # 3. last_synced
+    try:
+        async with engine.begin() as conn:
+            await conn.execute(text("ALTER TABLE fanpay_accounts ADD COLUMN last_synced TIMESTAMP"))
+    except Exception:
+        pass
+        
+    # 4. lots_cache
+    try:
+        async with engine.begin() as conn:
+            await conn.execute(text("ALTER TABLE fanpay_accounts ADD COLUMN lots_cache JSON"))
+    except Exception:
+        pass
+        
+    # 5. next_raise
+    try:
+        async with engine.begin() as conn:
+            await conn.execute(text("ALTER TABLE fanpay_accounts ADD COLUMN next_raise TIMESTAMP"))
+    except Exception:
+        pass
+
+    # 6. ai_audit_cache
+    try:
+        async with engine.begin() as conn:
+            await conn.execute(text("ALTER TABLE fanpay_accounts ADD COLUMN ai_audit_cache TEXT"))
+    except Exception:
+        pass
+
+    # 7. ai_audit_created_at
+    try:
+        async with engine.begin() as conn:
+            await conn.execute(text("ALTER TABLE fanpay_accounts ADD COLUMN ai_audit_created_at TIMESTAMP"))
+    except Exception:
+        pass

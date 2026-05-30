@@ -42,6 +42,13 @@ class FanpayAccount(SQLModel, table=True):
     last_synced: Optional[datetime] = Field(default=None)
     lots_cache: Optional[List[Dict[str, Any]]] = Field(default=None, sa_column=Column(JSON))
     
+    # Время следующего запланированного поднятия лотов
+    next_raise: Optional[datetime] = Field(default=None)
+    
+    # Кэш глубокого ИИ-аудита и дата его проведения
+    ai_audit_cache: Optional[str] = Field(default=None)
+    ai_audit_created_at: Optional[datetime] = Field(default=None)
+    
     # Таймстамп последнего ручного ответа оператора в чате Funpay для засыпания ИИ на 20 минут
     last_operator_activity: Optional[datetime] = Field(default=None)
     created_at: datetime = Field(default_factory=datetime.utcnow)
