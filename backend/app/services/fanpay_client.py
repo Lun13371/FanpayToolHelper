@@ -459,11 +459,18 @@ class FanpayClient:
         """
         Переходит на страницу редактирования лота, парсит форму и обновляет цену.
         """
+        # Сбрасываем куки до чистого golden_key для предотвращения конфликтов устаревшей сессии (PHPSESSID/CSRF)
+        self.cookies = {"golden_key": self.golden_key}
+        
         async with self._get_client() as client:
             try:
-                # 1. Загружаем страницу редактирования лота
-                edit_url = f"https://funpay.com/lots/edit?id={lot_id}"
+                # 1. Загружаем страницу редактирования лота (пробуем сначала offerEdit, потом edit)
+                edit_url = f"https://funpay.com/lots/offerEdit?offer={lot_id}"
                 response = await client.get(edit_url)
+                if response.status_code != 200:
+                    edit_url = f"https://funpay.com/lots/edit?id={lot_id}"
+                    response = await client.get(edit_url)
+
                 if response.status_code != 200:
                     logger.error(f"Не удалось открыть лот {lot_id} для изменения цены.")
                     return False
@@ -475,12 +482,18 @@ class FanpayClient:
 
                 soup = BeautifulSoup(html, "html.parser")
                 
-                # Нам нужно спарсить ВСЕ скрытые поля формы редактирования, чтобы отправить их обратно.
-                # Funpay валидирует все поля, поэтому просто отправить ID и цену нельзя.
-                form = soup.find("form", action=re.compile(r"/lots/save"))
+                # Ищем форму редактирования предложения или лота
+                form = soup.find("form", class_="form-offer-editor") or soup.find("form", action=re.compile(r"/lots/(save|offerSave)", re.I)) or soup.find("form")
                 if not form:
                     logger.error(f"Форма сохранения лота не найдена на странице для лота {lot_id}")
                     return False
+
+                # Определяем URL отправки формы
+                action_path = form.get("action", "/lots/offerSave")
+                if not action_path.startswith("http"):
+                    save_url = f"https://funpay.com{action_path}"
+                else:
+                    save_url = action_path
 
                 payload = {}
                 # Извлекаем все <input>, <select>, <textarea>
@@ -489,35 +502,35 @@ class FanpayClient:
                     if not name:
                         continue
                     
-                    val = inp.get("value", "")
-                    
-                    # Если это чекбокс, проверяем checked
-                    if inp.name == "input" and inp.get("type") == "checkbox" and not inp.has_attr("checked"):
+                    # Особая обработка для чекбоксов
+                    if inp.name == "input" and inp.get("type") == "checkbox":
+                        if inp.has_attr("checked"):
+                            payload[name] = inp.get("value", "1")
                         continue
                     
+                    val = inp.get("value", "")
+                    if inp.name == "textarea":
+                        val = inp.text
                     payload[name] = val
 
                 # Модифицируем цену на новую
-                # Цена лота обычно находится в поле "price"
                 payload["price"] = f"{new_price:.2f}"
                 payload["csrf_token"] = csrf_token
 
                 # Отправляем форму сохранения
-                save_url = "https://funpay.com/lots/save"
                 headers = {
                     "Content-Type": "application/x-www-form-urlencoded",
                     "X-Requested-With": "XMLHttpRequest"
                 }
 
+                logger.info(f"Отправка запроса изменения цены лота {lot_id} на {save_url}")
                 save_res = await client.post(save_url, data=payload, headers=headers)
                 if save_res.status_code == 200:
                     # Проверяем ответ
                     try:
                         res_json = save_res.json()
-                        # Если возвращается json с редиректом или успехом, то все отлично
-                        return "error" not in res_json
+                        return not res_json.get("error")
                     except:
-                        # Если вернулся html, проверяем отсутствие ошибок в тексте
                         return "ошибка" not in save_res.text.lower()
                 
                 return False
@@ -821,7 +834,10 @@ class FanpayClient:
 
                         # Проверяем наличие значка молнии (встроенной автовыдачи) на самом Funpay
                         has_native_delivery = False
-                        if row.find("span", class_="lightning") or row.find("i", class_=re.compile(r"lightning|flash", re.I)) or "⚡" in row.text:
+                        if (row.find("span", class_="lightning") or 
+                            row.find("i", class_=re.compile(r"lightning|flash|auto-dlv", re.I)) or 
+                            row.find(class_=re.compile(r"auto-dlv-icon|sc-offer-icons", re.I)) or
+                            "⚡" in row.text):
                             has_native_delivery = True
 
                         lots.append({
@@ -958,42 +974,144 @@ class FanpayClient:
         - Текущую цену и количество.
         - Состояние встроенной автовыдачи FunPay (активна ли, какой текст загружен).
         - Полный словарь полей формы для последующего сохранения.
+        - Парсит цены покупателей с учетом комиссии.
+        - Извлекает все поля ввода с их названиями и опциями для динамической настройки.
         """
+        # Сбрасываем куки до чистого golden_key для предотвращения конфликтов устаревшей сессии (PHPSESSID/CSRF)
+        self.cookies = {"golden_key": self.golden_key}
+        
         async with self._get_client() as client:
             try:
-                edit_url = f"https://funpay.com/lots/edit?id={lot_id}"
+                # Сначала пробуем открыть страницу редактирования предложения (individual offerEdit)
+                edit_url = f"https://funpay.com/lots/offerEdit?offer={lot_id}"
                 response = await client.get(edit_url)
+                if response.status_code != 200:
+                    # Если вернуло 404, пробуем старый URL lots/edit (category/settings)
+                    edit_url = f"https://funpay.com/lots/edit?id={lot_id}"
+                    response = await client.get(edit_url)
+                
                 if response.status_code != 200:
                     logger.error(f"Не удалось открыть страницу редактирования лота {lot_id}. Код: {response.status_code}")
                     return {}
 
                 html = response.text
                 soup = BeautifulSoup(html, "html.parser")
-                form = soup.find("form", action=re.compile(r"/lots/save"))
+                
+                # Ищем форму редактирования предложения или лота
+                form = soup.find("form", class_="form-offer-editor") or soup.find("form", action=re.compile(r"/lots/(save|offerSave)", re.I)) or soup.find("form")
                 if not form:
                     logger.error(f"Форма редактирования лота {lot_id} не найдена.")
                     return {}
 
+                form_action = form.get("action", "")
+                
+                # Парсим комиссии/цены покупателей
+                buyer_prices = []
+                table = soup.find("table", class_="table-buyers-prices")
+                if table:
+                    tbody = table.find("tbody")
+                    rows = tbody.find_all("tr") if tbody else table.find_all("tr")
+                    for row in rows:
+                        th = row.find("th")
+                        td = row.find("td")
+                        if th and td:
+                            buyer_prices.append({
+                                "method": th.text.strip(),
+                                "price": td.text.strip()
+                            })
+
                 fields = {}
+                form_fields = []
+                
                 # Парсим все поля ввода
                 for inp in form.find_all(["input", "select", "textarea"]):
                     name = inp.get("name")
                     if not name:
                         continue
                     
+                    el_type = inp.get("type", inp.name)
                     val = inp.get("value", "")
                     
                     # Особая обработка для чекбоксов
-                    if inp.name == "input" and inp.get("type") == "checkbox":
-                        if inp.has_attr("checked"):
-                            fields[name] = val or "1"
-                        continue
+                    if el_type == "checkbox":
+                        val = "1" if inp.has_attr("checked") else "0"
+                    
+                    # Особая обработка для select (текст опций)
+                    options = []
+                    if inp.name == "select":
+                        el_type = "select"
+                        selected_option = inp.find("option", selected=True)
+                        val = selected_option.get("value", "") if selected_option else ""
+                        for opt in inp.find_all("option"):
+                            opt_label = opt.text.strip()
+                            if not opt_label:
+                                opt_label = "-- не выбрано --"
+                            options.append({
+                                "value": opt.get("value", ""),
+                                "label": opt_label
+                            })
                     
                     # Особая обработка для textarea (текст лежит внутри тега)
                     if inp.name == "textarea":
+                        el_type = "textarea"
                         val = inp.text
                     
                     fields[name] = val
+                    
+                    # Пропускаем скрытые системные поля и поля, которые не должны редактироваться пользователем (например, Способ получения)
+                    if el_type == "hidden" or name == "fields[method]":
+                        continue
+                    
+                    # Парсим человекочитаемое имя (label)
+                    label_text = ""
+                    
+                    # Список дружелюбных имен для стандартных полей, чтобы не было путаницы
+                    label_overrides = {
+                        "fields[summary][ru]": "Краткое описание (RU)",
+                        "fields[summary][en]": "Краткое описание (EN)",
+                        "fields[desc][ru]": "Подробное описание (RU)",
+                        "fields[desc][en]": "Подробное описание (EN)",
+                        "fields[payment_msg][ru]": "Сообщение покупателю после оплаты (RU)",
+                        "fields[payment_msg][en]": "Сообщение покупателю после оплаты (EN)",
+                        "price": "Цена товара (Вы получите)",
+                        "amount": "Остаток товара (Количество)",
+                        "active": "Объявление активно на FunPay",
+                        "deactivate_after_sale": "Деактивировать после продажи",
+                        "fields[type]": "Тип предложения",
+                        "fields[method]": "Способ получения",
+                    }
+                    
+                    if name in label_overrides:
+                        label_text = label_overrides[name]
+                    else:
+                        parent_group = inp.find_parent(class_=re.compile(r"form-group|form-row", re.I))
+                        if parent_group:
+                            label_el = parent_group.find("label")
+                            if label_el:
+                                label_text = label_el.text.strip()
+                                label_text = re.sub(r'\s+', ' ', label_text).strip()
+                                
+                        inp_id = inp.get("id")
+                        if not label_text and inp_id:
+                            label_el = soup.find("label", {"for": inp_id})
+                            if label_el:
+                                label_text = label_el.text.strip()
+                                
+                        if not label_text and inp.parent.name == "label":
+                            label_text = inp.parent.text.strip()
+                            
+                        if not label_text:
+                            label_text = inp.get("placeholder", name)
+                            
+                        label_text = re.sub(r'\s+', ' ', label_text).strip().rstrip(":")
+                    
+                    form_fields.append({
+                        "name": name,
+                        "label": label_text,
+                        "type": el_type,
+                        "value": val,
+                        "options": options if el_type == "select" else None
+                    })
 
                 # Выделяем нужные параметры
                 price = float(fields.get("price", "0").replace(",", ".")) if "price" in fields else 0.0
@@ -1002,27 +1120,17 @@ class FanpayClient:
                 # Находим поля родной автовыдачи
                 native_auto_delivery_enabled = False
                 native_auto_delivery_text = ""
+                supports_native_auto_delivery = any("auto_delivery" in k or "secrets" in k for k in fields.keys())
                 
-                # Ищем поле галочки автовыдачи (обычно 'auto_delivery')
-                auto_deliv_key = None
-                for k in fields.keys():
-                    if "auto_delivery" in k and k != "auto_delivery_text":
-                        auto_deliv_key = k
-                        break
+                # Ищем поле галочки автовыдачи
+                if "auto_delivery" in fields:
+                    native_auto_delivery_enabled = fields.get("auto_delivery") == "1"
                 
-                if auto_deliv_key and fields.get(auto_deliv_key):
-                    native_auto_delivery_enabled = True
-
-                # Ищем поле текста автовыдачи (обычно 'auto_delivery_text')
-                text_key = "auto_delivery_text" if "auto_delivery_text" in fields else None
-                if not text_key:
-                    for k in fields.keys():
-                        if "auto_delivery" in k and "text" in k:
-                            text_key = k
-                            break
-                
-                if text_key:
-                    native_auto_delivery_text = fields.get(text_key, "")
+                # Ищем поле текста автовыдачи (обычно 'secrets' или 'auto_delivery_text')
+                if "secrets" in fields:
+                    native_auto_delivery_text = fields.get("secrets", "")
+                elif "auto_delivery_text" in fields:
+                    native_auto_delivery_text = fields.get("auto_delivery_text", "")
 
                 return {
                     "lot_id": lot_id,
@@ -1030,7 +1138,11 @@ class FanpayClient:
                     "amount": amount,
                     "native_auto_delivery_enabled": native_auto_delivery_enabled,
                     "native_auto_delivery_text": native_auto_delivery_text,
-                    "fields": fields
+                    "supports_native_auto_delivery": supports_native_auto_delivery,
+                    "fields": fields,
+                    "form_fields": form_fields,
+                    "buyer_prices": buyer_prices,
+                    "form_action": form_action
                 }
             except Exception as e:
                 logger.error(f"Исключение при извлечении деталей лота {lot_id}: {e}")
@@ -1042,16 +1154,24 @@ class FanpayClient:
         fields: Dict[str, Any], 
         price: Optional[float] = None, 
         native_auto_delivery_enabled: Optional[bool] = None, 
-        native_auto_delivery_text: Optional[str] = None
+        native_auto_delivery_text: Optional[str] = None,
+        custom_fields: Optional[Dict[str, Any]] = None
     ) -> bool:
         """
         Сохраняет лот на FunPay, используя базовые поля формы и внося в них нужные изменения.
         """
+        # Сбрасываем куки до чистого golden_key для предотвращения конфликтов устаревшей сессии (PHPSESSID/CSRF)
+        self.cookies = {"golden_key": self.golden_key}
+        
         async with self._get_client() as client:
             try:
-                # 1. Загружаем страницу еще раз для актуального CSRF токена
-                edit_url = f"https://funpay.com/lots/edit?id={lot_id}"
+                # 1. Загружаем страницу редактирования лота
+                edit_url = f"https://funpay.com/lots/offerEdit?offer={lot_id}"
                 response = await client.get(edit_url)
+                if response.status_code != 200:
+                    edit_url = f"https://funpay.com/lots/edit?id={lot_id}"
+                    response = await client.get(edit_url)
+                
                 if response.status_code != 200:
                     return False
 
@@ -1060,52 +1180,101 @@ class FanpayClient:
                     logger.error("Не удалось извлечь CSRF токен для сохранения лота.")
                     return False
 
-                # Копируем словарь полей
-                payload = fields.copy()
+                soup = BeautifulSoup(response.text, "html.parser")
+                form = soup.find("form", class_="form-offer-editor") or soup.find("form", action=re.compile(r"/lots/(save|offerSave)", re.I)) or soup.find("form")
+                if not form:
+                    logger.error("Форма сохранения не найдена.")
+                    return False
+
+                # Определяем URL отправки формы
+                action_path = form.get("action", "/lots/offerSave")
+                if not action_path.startswith("http"):
+                    save_url = f"https://funpay.com{action_path}"
+                else:
+                    save_url = action_path
+
+                # Парсим свежие базовые поля формы
+                payload = {}
+                for inp in form.find_all(["input", "select", "textarea"]):
+                    name = inp.get("name")
+                    if not name:
+                        continue
+                    
+                    # Особая обработка чекбоксов (если отмечен - посылаем значение, иначе пропускаем)
+                    if inp.name == "input" and inp.get("type") == "checkbox":
+                        if inp.has_attr("checked"):
+                            payload[name] = inp.get("value", "1")
+                        continue
+                        
+                    val = inp.get("value", "")
+                    if inp.name == "textarea":
+                        val = inp.text
+                    payload[name] = val
+
                 payload["csrf_token"] = csrf_token
 
-                # 2. Применяем новые параметры, если они переданы
+                # 2. Применяем кастомные поля с фронтенда
+                if custom_fields:
+                    for k, v in custom_fields.items():
+                        if k == "csrf_token" or k == "form_created_at":
+                            continue
+                        # Обработка чекбоксов во входящем словаре
+                        if isinstance(v, bool):
+                            if v:
+                                payload[k] = "1"
+                            else:
+                                payload.pop(k, None)
+                        elif v == "1":
+                            payload[k] = "1"
+                        elif v == "0" or v is None or v == "":
+                            # Если чекбокс или пустое поле
+                            if k in ["active", "deactivate_after_sale", "auto_delivery"]:
+                                payload.pop(k, None)
+                            else:
+                                payload[k] = ""
+                        else:
+                            payload[k] = str(v)
+
+                # 3. Применяем переданные переопределения (для совместимости)
                 if price is not None:
                     payload["price"] = f"{price:.2f}"
                 
-                # Настройка родной автовыдачи
-                auto_deliv_key = "auto_delivery"
-                for k in payload.keys():
-                    if "auto_delivery" in k and k != "auto_delivery_text":
-                        auto_deliv_key = k
-                        break
-
+                # Настройка автовыдачи (secrets / auto_delivery_text)
                 if native_auto_delivery_enabled is not None:
+                    auto_deliv_key = "auto_delivery"
+                    if "auto_delivery" not in payload and "auto_delivery" in fields:
+                        auto_deliv_key = "auto_delivery"
+                    
                     if native_auto_delivery_enabled:
                         payload[auto_deliv_key] = "1"
                     else:
                         payload.pop(auto_deliv_key, None)
 
                 if native_auto_delivery_text is not None:
-                    text_key = "auto_delivery_text" if "auto_delivery_text" in payload else None
-                    if not text_key:
-                        for k in payload.keys():
-                            if "auto_delivery" in k and "text" in k:
-                                text_key = k
-                                break
-                    if not text_key:
-                        text_key = "auto_delivery_text"
+                    # Пытаемся найти нужное текстовое поле (secrets или auto_delivery_text)
+                    text_key = "secrets" if "secrets" in payload or "secrets" in fields else "auto_delivery_text"
                     payload[text_key] = native_auto_delivery_text
 
-                # 3. Отправляем запрос на сохранение
-                save_url = "https://funpay.com/lots/save"
+                # 4. Отправляем запрос на сохранение
                 headers = {
                     "Content-Type": "application/x-www-form-urlencoded",
                     "X-Requested-With": "XMLHttpRequest"
                 }
 
+                logger.info(f"Отправка формы сохранения лота {lot_id} на {save_url}")
                 save_res = await client.post(save_url, data=payload, headers=headers)
+                logger.info(f"Ответ FunPay: {save_res.status_code} | {save_res.text[:300]}")
                 if save_res.status_code == 200:
                     try:
                         res_json = save_res.json()
-                        return "error" not in res_json
-                    except:
-                        return "ошибка" not in save_res.text.lower()
+                        is_ok = not res_json.get("error")
+                        if not is_ok:
+                            logger.error(f"FunPay вернул ошибку сохранения лота {lot_id}: {res_json}")
+                        return is_ok
+                    except Exception as parse_e:
+                        logger.warning(f"Не удалось распарсить JSON ответа FunPay: {parse_e}")
+                        is_ok = "ошибка" not in save_res.text.lower()
+                        return is_ok
                 
                 return False
             except Exception as e:

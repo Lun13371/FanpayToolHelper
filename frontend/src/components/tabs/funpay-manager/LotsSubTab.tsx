@@ -22,6 +22,9 @@ interface NativeDeliveryState {
   amount: number;
   native_auto_delivery_enabled: boolean;
   native_auto_delivery_text: string;
+  supports_native_auto_delivery?: boolean;
+  buyer_prices?: { method: string; price: string }[];
+  form_fields?: { name: string; label: string; type: string; value: string; options?: { value: string; label: string }[] }[];
 }
 
 interface LotsSubTabProps {
@@ -63,6 +66,7 @@ export default function LotsSubTab({
   const [loadingNative, setLoadingNative] = useState(false);
   const [savingNative, setSavingNative] = useState(false);
   const [nativeDelivery, setNativeDelivery] = useState<NativeDeliveryState | null>(null);
+  const [customFields, setCustomFields] = useState<Record<string, any>>({});
   const [savingRule, setSavingRule] = useState(false);
 
   useEffect(() => {
@@ -202,6 +206,13 @@ export default function LotsSubTab({
       if (res.ok) {
         const data = await res.json();
         setNativeDelivery(data);
+        const initialFields: Record<string, any> = {};
+        if (data.form_fields) {
+          data.form_fields.forEach((f: any) => {
+            initialFields[f.name] = f.value;
+          });
+        }
+        setCustomFields(initialFields);
       }
     } catch (err) {
       console.error(err);
@@ -316,7 +327,8 @@ export default function LotsSubTab({
         body: JSON.stringify({
           price: nativeDelivery.price,
           native_auto_delivery_enabled: nativeDelivery.native_auto_delivery_enabled,
-          native_auto_delivery_text: nativeDelivery.native_auto_delivery_text
+          native_auto_delivery_text: nativeDelivery.native_auto_delivery_text,
+          fields: customFields
         })
       });
       if (res.ok) {
@@ -376,9 +388,45 @@ export default function LotsSubTab({
 
         {/* Лоадер */}
         {lotsLoading ? (
-          <div className="py-20 flex flex-col items-center justify-center gap-3 text-slate-400 relative z-10">
-            <Loader2 className="w-7 h-7 animate-spin text-brand-cyan" />
-            <span className="text-xs font-semibold">Синхронизация лотов...</span>
+          <div className="space-y-5 animate-pulse relative z-10">
+            {/* Filter buttons skeleton */}
+            <div className="flex flex-wrap gap-1.5 mb-4">
+              {[1, 2, 3].map((i) => (
+                <div key={i} className="h-7 w-24 bg-white/5 border border-white/5 rounded-xl" />
+              ))}
+            </div>
+            
+            {/* Table skeleton */}
+            {[1, 2].map((g) => (
+              <div key={g} className="border border-white/5 rounded-2xl bg-white/[0.01] overflow-hidden space-y-4 pb-4">
+                <div className="p-4 bg-slate-950/40 border-b border-white/5 flex justify-between items-center">
+                  <div className="flex items-center gap-2 w-1/3">
+                    <div className="h-2 w-2 rounded-full bg-white/10" />
+                    <div className="h-3 bg-white/10 rounded w-1/2" />
+                    <div className="h-4 bg-white/10 rounded-full w-10" />
+                  </div>
+                  <div className="h-3 bg-white/10 rounded w-1/4" />
+                </div>
+                <div className="px-4 space-y-4">
+                  {[1, 2].map((i) => (
+                    <div key={i} className="flex flex-col sm:flex-row justify-between sm:items-center py-2 gap-3 border-b border-white/5 last:border-0 pb-4 last:pb-0">
+                      <div className="space-y-2 w-full sm:w-1/2">
+                        <div className="h-3.5 bg-white/5 rounded w-11/12" />
+                        <div className="flex gap-1.5">
+                          <div className="h-4 bg-white/5 rounded-full w-12" />
+                          <div className="h-4 bg-white/5 rounded-full w-20" />
+                        </div>
+                      </div>
+                      <div className="flex justify-between items-center sm:contents gap-4">
+                        <div className="h-3.5 bg-white/5 rounded w-12" />
+                        <div className="h-3.5 bg-white/5 rounded w-16" />
+                        <div className="h-8 bg-white/5 border border-white/5 rounded-xl w-24" />
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ))}
           </div>
         ) : lots.length === 0 ? (
           <div className="py-12 text-center text-slate-500 text-xs relative z-10">
@@ -455,6 +503,10 @@ export default function LotsSubTab({
                                   <td className="py-3 px-4 font-semibold text-white max-w-[320px] truncate" title={lot.lot_name}>
                                     <div className="flex items-center gap-2 max-w-full">
                                       <span className="truncate">{lot.lot_name}</span>
+                                      <span className="text-[8px] bg-emerald-500/10 border border-emerald-500/25 text-emerald-400 px-2 py-0.5 rounded-full font-bold uppercase tracking-wider shrink-0 flex items-center gap-1">
+                                        <span className="w-1 h-1 rounded-full bg-emerald-400 animate-pulse" />
+                                        Активен
+                                      </span>
                                       {hasNativeDelivery && (
                                         <span className="text-[8px] bg-amber-500/10 border border-amber-500/20 text-amber-400 px-2 py-0.5 rounded-full font-bold uppercase tracking-wider shrink-0 filter drop-shadow-[0_0_2px_rgba(245,158,11,0.2)]">
                                           ⚡ FP-Автовыдача
@@ -561,7 +613,7 @@ export default function LotsSubTab({
               initial={{ opacity: 0, scale: 0.95, y: 15 }}
               animate={{ opacity: 1, scale: 1, y: 0 }}
               exit={{ opacity: 0, scale: 0.95, y: 15 }}
-              className="w-full max-w-2xl bg-[#090A0F] border border-white/5 rounded-3xl p-6 relative overflow-hidden"
+              className="w-full max-w-5xl max-h-[90vh] overflow-y-auto md:overflow-hidden bg-[#090A0F] border border-white/5 rounded-3xl p-6 relative no-scrollbar"
               onMouseMove={handleMouseMove}
             >
               <div className="glow-bg rounded-3xl" />
@@ -583,10 +635,10 @@ export default function LotsSubTab({
                   <h2 className="text-md sm:text-lg font-bold text-white mt-1.5 pr-8">{selectedLot?.lot_name}</h2>
                 </div>
 
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-6 pt-2 border-t border-white/5">
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-6 pt-2 border-t border-white/5">
                   
-                  {/* ЛЕВАЯ КОЛОНКА: ДЕМПИНГ И ШАБЛОНЫ */}
-                  <div className="space-y-4">
+                  {/* ЛЕВАЯ КОЛОНКА: ДЕМПИНГ И ШАБЛОНЫ (1/3 ширины на ПК) */}
+                  <div className="space-y-4 md:col-span-1">
                     <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider flex items-center gap-1.5 pb-2 border-b border-white/5">
                       <Sliders className="w-3.5 h-3.5 text-brand-cyan" />
                       <span>Параметры демпинга</span>
@@ -662,66 +714,217 @@ export default function LotsSubTab({
                     </div>
                   </div>
 
-                  {/* ПРАВАЯ КОЛОНКА: ВСТРОЕННАЯ АВТОВЫДАЧА FUNPAY */}
-                  <div className="space-y-4 md:border-l md:border-white/5 md:pl-6">
-                    <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider flex items-center gap-1.5 pb-2 border-b border-white/5">
+                  {/* ПРАВАЯ КОЛОНКА: ВСТРОЕННАЯ АВТОВЫДАЧА И НАСТРОЙКИ ОБЪЯВЛЕНИЯ FUNPAY */}
+                  <div className="space-y-4 md:col-span-2 md:border-l md:border-white/5 md:pl-6 max-h-[550px] overflow-y-auto pr-2 no-scrollbar">
+                    <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider flex items-center gap-1.5 pb-2 border-b border-white/5 sticky top-0 bg-[#090A0F] z-10">
                       <Zap className="w-3.5 h-3.5 text-brand-cyan" />
-                      <span>Родная автовыдача FunPay</span>
+                      <span>Параметры объявления FunPay</span>
                     </h3>
 
                     {loadingNative ? (
-                      <div className="py-12 flex flex-col items-center justify-center gap-2 text-slate-500 text-xs">
-                        <Loader2 className="w-6 h-6 animate-spin text-brand-cyan" />
-                        <span>Чтение данных с Funpay...</span>
-                      </div>
-                    ) : nativeDelivery ? (
-                      <div className="space-y-4">
-                        <div className="flex items-center justify-between p-2 rounded-xl bg-white/[0.01] border border-white/5">
-                          <span className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">Родная автовыдача</span>
-                          <button
-                            onClick={() => {
-                              if (nativeDelivery) {
-                                setNativeDelivery({
-                                  ...nativeDelivery,
-                                  native_auto_delivery_enabled: !nativeDelivery.native_auto_delivery_enabled
-                                });
-                              }
-                            }}
-                            className="text-slate-400 hover:text-white transition-colors"
-                          >
-                            {nativeDelivery.native_auto_delivery_enabled ? (
-                              <ToggleRight className="w-7 h-7 text-brand-cyan" />
-                            ) : (
-                              <ToggleLeft className="w-7 h-7 text-slate-600" />
-                            )}
-                          </button>
+                      <div className="space-y-5 py-2 animate-pulse">
+                        {/* Price & Amount Skeleton */}
+                        <div className="grid grid-cols-2 gap-3">
+                          <div className="space-y-2">
+                            <div className="h-2.5 bg-white/5 rounded w-1/2" />
+                            <div className="h-10 bg-white/5 border border-white/5 rounded-xl" />
+                          </div>
+                          <div className="space-y-2">
+                            <div className="h-2.5 bg-white/5 rounded w-1/3" />
+                            <div className="h-10 bg-white/5 border border-white/5 rounded-xl" />
+                          </div>
                         </div>
 
-                        <div>
-                          <label className="text-[9px] font-bold text-slate-500 uppercase mb-1.5 block">Текст выдачи товара (ключ / инструкция):</label>
-                          <textarea
-                            value={nativeDelivery.native_auto_delivery_text}
-                            onChange={(e) => {
-                              if (nativeDelivery) {
-                                setNativeDelivery({
-                                  ...nativeDelivery,
-                                  native_auto_delivery_text: e.target.value
-                                });
-                              }
-                            }}
-                            rows={4}
-                            className="w-full bg-slate-950/60 border border-white/5 rounded-xl py-2 px-3 text-xs text-white focus:outline-none focus:border-brand-cyan/40 resize-none leading-relaxed font-mono"
-                            placeholder="Введите text/ссылки для автовыдачи..."
-                          />
+                        {/* Commission card Skeleton */}
+                        <div className="p-3.5 rounded-2xl bg-white/[0.02] border border-white/5 space-y-3">
+                          <div className="h-2.5 bg-white/5 rounded w-1/3" />
+                          <div className="grid grid-cols-2 gap-2">
+                            <div className="h-12 bg-white/5 border border-white/5 rounded-xl" />
+                            <div className="h-12 bg-white/5 border border-white/5 rounded-xl" />
+                          </div>
                         </div>
+
+                        {/* Active toggles and descriptions Skeletons */}
+                        <div className="space-y-4">
+                          {[1, 2, 3].map((i) => (
+                            <div key={i} className="space-y-2">
+                              <div className="h-2.5 bg-white/5 rounded w-1/4" />
+                              <div className="h-20 bg-white/5 border border-white/5 rounded-xl" />
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    ) : nativeDelivery ? (
+                      <div className="space-y-4 pb-2">
+                        {/* Цена и Количество */}
+                        <div className="grid grid-cols-2 gap-3">
+                          <div>
+                            <label className="text-[9px] font-bold text-slate-500 uppercase mb-1 block">Текущая цена (Вы получите)</label>
+                            <input
+                              type="number"
+                              step="0.01"
+                              value={nativeDelivery.price}
+                              onChange={(e) => setNativeDelivery({ ...nativeDelivery, price: parseFloat(e.target.value) || 0 })}
+                              className="w-full bg-slate-950/50 border border-white/5 rounded-xl py-2 px-3 text-xs text-white focus:outline-none focus:border-brand-cyan/40"
+                              placeholder="Цена"
+                            />
+                          </div>
+                          <div>
+                            <label className="text-[9px] font-bold text-slate-500 uppercase mb-1 block">Количество (Наличие)</label>
+                            <input
+                              type="number"
+                              value={customFields['amount'] !== undefined ? customFields['amount'] : nativeDelivery.amount}
+                              onChange={(e) => setCustomFields({ ...customFields, amount: e.target.value })}
+                              className="w-full bg-slate-950/50 border border-white/5 rounded-xl py-2 px-3 text-xs text-white focus:outline-none focus:border-brand-cyan/40"
+                              placeholder="Остаток"
+                            />
+                          </div>
+                        </div>
+
+                        {/* Цены покупателей с комиссией */}
+                        {nativeDelivery.buyer_prices && nativeDelivery.buyer_prices.length > 0 && (
+                          <div className="p-3 rounded-2xl bg-white/[0.02] border border-white/5 space-y-2">
+                            <span className="text-[9px] text-slate-400 font-bold uppercase tracking-wider block">Цены покупателей (с комиссией):</span>
+                            <div className="grid grid-cols-2 gap-2">
+                              {nativeDelivery.buyer_prices.map((bp, idx) => (
+                                <div key={idx} className="flex justify-between items-center p-2 rounded-xl bg-slate-950/45 border border-white/5 text-[9px]">
+                                  <span className="text-slate-400 font-semibold truncate max-w-[110px]" title={bp.method}>{bp.method}</span>
+                                  <span className="text-brand-cyan font-bold font-mono">{bp.price}</span>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+
+                        {/* Родная автовыдача */}
+                        {nativeDelivery.supports_native_auto_delivery ? (
+                          <div className="space-y-3 p-3 rounded-2xl bg-brand-cyan/[0.02] border border-brand-cyan/5">
+                            <div className="flex items-center justify-between">
+                              <span className="text-[10px] text-brand-cyan font-bold uppercase tracking-wider">Родная автовыдача FP</span>
+                              <button
+                                onClick={() => {
+                                  if (nativeDelivery) {
+                                    setNativeDelivery({
+                                      ...nativeDelivery,
+                                      native_auto_delivery_enabled: !nativeDelivery.native_auto_delivery_enabled
+                                    });
+                                  }
+                                }}
+                                className="text-slate-400 hover:text-white transition-colors"
+                              >
+                                {nativeDelivery.native_auto_delivery_enabled ? (
+                                  <ToggleRight className="w-7 h-7 text-brand-cyan" />
+                                ) : (
+                                  <ToggleLeft className="w-7 h-7 text-slate-600" />
+                                )}
+                              </button>
+                            </div>
+
+                            <div>
+                              <label className="text-[9px] font-bold text-slate-500 uppercase mb-1 block">Текст выдачи товара (ключи/инструкция):</label>
+                              <textarea
+                                value={nativeDelivery.native_auto_delivery_text}
+                                onChange={(e) => {
+                                  if (nativeDelivery) {
+                                    setNativeDelivery({
+                                      ...nativeDelivery,
+                                      native_auto_delivery_text: e.target.value
+                                    });
+                                  }
+                                }}
+                                rows={3}
+                                className="w-full bg-slate-950/60 border border-white/5 rounded-xl py-2 px-3 text-xs text-white focus:outline-none focus:border-brand-cyan/40 resize-none leading-relaxed font-mono"
+                                placeholder="Введите ключи или текст автовыдачи..."
+                              />
+                            </div>
+                          </div>
+                        ) : (
+                          <div className="p-3.5 rounded-2xl bg-amber-500/5 border border-amber-500/10 space-y-1">
+                            <span className="text-[10px] text-amber-400 font-bold uppercase tracking-wider flex items-center gap-1.5">
+                              ⚠️ Встроенная автовыдача недоступна
+                            </span>
+                            <p className="text-[10px] text-slate-400 leading-relaxed">
+                              Данный раздел товара на FunPay не поддерживает встроенную автовыдачу. Вы можете использовать нашу локальную <span className="text-brand-cyan font-semibold">🤖 БОТ-ВЫДАЧУ</span> для автоматической отправки товара покупателям в чат.
+                            </p>
+                          </div>
+                        )}
+
+                        {/* Динамические поля объявления с Funpay */}
+                        {nativeDelivery.form_fields && nativeDelivery.form_fields.length > 0 && (
+                          <div className="space-y-4 pt-1">
+                            <h4 className="text-[9px] font-bold text-slate-500 uppercase tracking-wider pb-1 border-b border-white/5">
+                              Детали предложения
+                            </h4>
+                            {nativeDelivery.form_fields
+                              .filter((f: any) => ![
+                                'csrf_token', 'form_created_at', 'offer_id', 'node_id', 'location', 
+                                'deleted', 'fields[images]', 'price', 'auto_delivery', 'secrets', 'fields[method]'
+                              ].includes(f.name))
+                              .map((f: any) => {
+                                const val = customFields[f.name] !== undefined ? customFields[f.name] : f.value;
+                                
+                                return (
+                                  <div key={f.name} className="space-y-1.5">
+                                    <label className="text-[9px] font-bold text-slate-400 uppercase tracking-wide block">
+                                      {f.label || f.name}
+                                    </label>
+                                    
+                                    {f.type === 'textarea' ? (
+                                      <textarea
+                                        value={val}
+                                        onChange={(e) => setCustomFields({ ...customFields, [f.name]: e.target.value })}
+                                        rows={3}
+                                        className="w-full bg-slate-950/60 border border-white/5 rounded-xl py-2 px-3 text-xs text-white focus:outline-none focus:border-brand-cyan/40 resize-none leading-relaxed"
+                                        placeholder={`Введите ${f.label || f.name}...`}
+                                      />
+                                    ) : f.type === 'select' ? (
+                                      <select
+                                        value={val}
+                                        onChange={(e) => setCustomFields({ ...customFields, [f.name]: e.target.value })}
+                                        className="w-full bg-slate-950/60 border border-white/5 rounded-xl py-2 px-3 text-xs text-white focus:outline-none focus:border-brand-cyan/40"
+                                      >
+                                        {f.options?.map((opt: any) => (
+                                          <option key={opt.value} value={opt.value} className="bg-slate-950 text-white">
+                                            {opt.label}
+                                          </option>
+                                        ))}
+                                      </select>
+                                    ) : f.type === 'checkbox' ? (
+                                      <div className="flex items-center justify-between p-2 rounded-xl bg-white/[0.01] border border-white/5">
+                                        <span className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">{f.label || f.name}</span>
+                                        <button
+                                          onClick={() => setCustomFields({ ...customFields, [f.name]: val === '1' ? '0' : '1' })}
+                                          className="text-slate-400 hover:text-white transition-colors"
+                                        >
+                                          {val === '1' ? (
+                                            <ToggleRight className="w-7 h-7 text-brand-cyan" />
+                                          ) : (
+                                            <ToggleLeft className="w-7 h-7 text-slate-600" />
+                                          )}
+                                        </button>
+                                      </div>
+                                    ) : (
+                                      <input
+                                        type="text"
+                                        value={val}
+                                        onChange={(e) => setCustomFields({ ...customFields, [f.name]: e.target.value })}
+                                        className="w-full bg-slate-950/60 border border-white/5 rounded-xl py-2 px-3 text-xs text-white focus:outline-none focus:border-brand-cyan/40"
+                                        placeholder={`Введите ${f.label || f.name}...`}
+                                      />
+                                    )}
+                                  </div>
+                                );
+                              })}
+                          </div>
+                        )}
 
                         <button
                           onClick={handleSaveNativeDelivery}
                           disabled={savingNative}
-                          className="w-full py-2.5 bg-brand-cyan hover:bg-brand-cyan/90 text-slate-950 rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-1.5 shadow-lg shadow-brand-cyan/10"
+                          className="w-full py-2.5 bg-brand-cyan hover:bg-brand-cyan/90 text-slate-950 rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-1.5 shadow-lg shadow-brand-cyan/10 sticky bottom-0 z-10 border border-brand-cyan/20"
                         >
                           {savingNative ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Check className="w-3.5 h-3.5 fill-current" />}
-                          <span>Сохранить на Funpay</span>
+                          <span>Сохранить настройки на Funpay</span>
                         </button>
                       </div>
                     ) : (

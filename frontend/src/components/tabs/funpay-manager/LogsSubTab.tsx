@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { motion } from 'framer-motion';
-import { Terminal, ToggleLeft, ToggleRight, RefreshCw, Loader2 } from 'lucide-react';
+import { Terminal, ToggleLeft, ToggleRight, RefreshCw } from 'lucide-react';
 import { useAppContext, API_URL } from '../../../context/AppContext';
 import { handleMouseMove } from '../../../utils/mouseTracker';
 
@@ -125,9 +125,17 @@ export default function LogsSubTab() {
         {/* Тело логов */}
         <div className="max-h-[380px] overflow-y-auto no-scrollbar space-y-2 pr-2">
           {logsLoading && sysLogs.length === 0 ? (
-            <div className="py-12 flex flex-col items-center justify-center gap-2 text-slate-500 text-xs">
-              <Loader2 className="w-6 h-6 animate-spin text-brand-cyan" />
-              <span>Подключение к терминалу логирования...</span>
+            <div className="space-y-3.5 animate-pulse py-2 font-mono">
+              {[1, 2, 3, 4, 5, 6].map((i) => (
+                <div key={i} className="flex gap-3 items-center">
+                  {/* Timestamp skeleton */}
+                  <div className="h-3 bg-white/10 rounded w-16 shrink-0" />
+                  {/* Tag skeleton */}
+                  <div className="h-4 bg-brand-cyan/10 border border-brand-cyan/20 rounded w-14 shrink-0" />
+                  {/* Text line skeleton */}
+                  <div className="h-3 bg-white/5 rounded flex-grow" style={{ width: `${30 + i * 10}%` }} />
+                </div>
+              ))}
             </div>
           ) : sysLogs.length === 0 ? (
             <div className="py-12 text-center text-slate-600 italic">

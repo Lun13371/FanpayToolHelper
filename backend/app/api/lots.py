@@ -56,11 +56,15 @@ class NativeDeliveryResponse(BaseModel):
     amount: int
     native_auto_delivery_enabled: bool
     native_auto_delivery_text: str
+    supports_native_auto_delivery: bool = False
+    buyer_prices: Optional[List[Dict[str, str]]] = None
+    form_fields: Optional[List[Dict[str, Any]]] = None
 
 class NativeDeliveryUpdate(BaseModel):
     price: Optional[float] = None
     native_auto_delivery_enabled: Optional[bool] = None
     native_auto_delivery_text: Optional[str] = None
+    fields: Optional[Dict[str, Any]] = None
 
 
 @router.get("", response_model=List[LotResponse])
@@ -376,7 +380,10 @@ async def get_lot_native_delivery(
         price=details["price"],
         amount=details["amount"],
         native_auto_delivery_enabled=details["native_auto_delivery_enabled"],
-        native_auto_delivery_text=details["native_auto_delivery_text"]
+        native_auto_delivery_text=details["native_auto_delivery_text"],
+        supports_native_auto_delivery=details.get("supports_native_auto_delivery", False),
+        buyer_prices=details.get("buyer_prices"),
+        form_fields=details.get("form_fields")
     )
 
 
@@ -416,7 +423,8 @@ async def update_lot_native_delivery(
         fields=details["fields"],
         price=data.price,
         native_auto_delivery_enabled=data.native_auto_delivery_enabled,
-        native_auto_delivery_text=data.native_auto_delivery_text
+        native_auto_delivery_text=data.native_auto_delivery_text,
+        custom_fields=data.fields
     )
 
     if not success:
@@ -424,17 +432,35 @@ async def update_lot_native_delivery(
 
     # 3. Обновляем кэш лотов в БД!
     if account.lots_cache:
+        # Пытаемся получить новую цену из переданных полей (может быть в 'price' или 'data.price')
+        new_price = data.price
+        if new_price is None and data.fields and "price" in data.fields:
+            try:
+                new_price = float(data.fields["price"])
+            except:
+                pass
+                
+        # Пытаемся получить новое название лота
+        new_name = None
+        if data.fields:
+            if "fields[summary][ru]" in data.fields:
+                new_name = data.fields["fields[summary][ru]"]
+            elif "fields[summary][en]" in data.fields:
+                new_name = data.fields["fields[summary][en]"]
+
         updated_lots = []
         for l in account.lots_cache:
             if l.get("lot_id") == lot_id:
-                if data.price is not None:
-                    l["price"] = data.price
+                if new_price is not None:
+                    l["price"] = new_price
+                if new_name is not None:
+                    l["lot_name"] = new_name
             updated_lots.append(l)
         account.lots_cache = updated_lots
         db.add(account)
         await db.commit()
 
-    return {"success": True, "message": "Настройки встроенной автовыдачи успешно изменены на Funpay!"}
+    return {"success": True, "message": "Настройки лота успешно изменены на Funpay!"}
 
 
 @accounts_lots_router.post("/{account_id}/raise")

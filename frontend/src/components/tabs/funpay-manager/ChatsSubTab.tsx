@@ -149,7 +149,19 @@ export default function ChatsSubTab() {
         </div>
 
         <div className="space-y-2 relative z-10 max-h-[500px] overflow-y-auto pr-1 no-scrollbar">
-          {chats.length === 0 ? (
+          {chatsLoading && chats.length === 0 ? (
+            <div className="space-y-2 animate-pulse">
+              {[1, 2, 3, 4].map((i) => (
+                <div key={i} className="w-full p-3 rounded-2xl border border-white/5 bg-slate-950/10 flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-xl bg-white/5 border border-white/5 shrink-0" />
+                  <div className="min-w-0 flex-grow space-y-2">
+                    <div className="h-3 bg-white/5 rounded w-1/3" />
+                    <div className="h-2.5 bg-white/5 rounded w-3/4" />
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : chats.length === 0 ? (
             <div className="text-center py-12 text-slate-500 text-xs">Нет active-диалогов на Funpay</div>
           ) : (
             chats.map((chat) => (
@@ -218,7 +230,19 @@ export default function ChatsSubTab() {
             {/* Окно переписки */}
             <div className="flex-grow overflow-y-auto py-4 space-y-3 pr-1 no-scrollbar">
               {messagesLoading && messages.length === 0 ? (
-                <div className="text-center py-20 text-slate-500 text-xs">Загрузка переписки...</div>
+                <div className="space-y-4 animate-pulse px-2 py-4">
+                  {[1, 2, 3].map((i) => {
+                    const isMe = i % 2 === 0;
+                    return (
+                      <div key={i} className={`flex flex-col max-w-[70%] space-y-1.5 ${isMe ? 'ml-auto items-end' : 'mr-auto items-start'}`}>
+                        {/* Bubble */}
+                        <div className={`p-3.5 rounded-2xl ${isMe ? 'bg-brand-cyan/5 rounded-tr-none w-48 h-10' : 'bg-white/5 rounded-tl-none w-56 h-14'}`} />
+                        {/* Time */}
+                        <div className="h-2 bg-white/5 rounded w-8" />
+                      </div>
+                    );
+                  })}
+                </div>
               ) : messages.length === 0 ? (
                 <div className="text-center py-20 text-slate-500 text-xs">История сообщений пуста</div>
               ) : (

@@ -48,6 +48,7 @@ export default function FunpayManagerTab() {
   const [lots, setLots] = useState<FunpayLot[]>([]);
   const [lotsLoading, setLotsLoading] = useState(false);
   const [raising, setRaising] = useState(false);
+  const [togglingBot, setTogglingBot] = useState(false);
 
   const getTimeAgo = (dateString?: string): string => {
     if (!dateString) return 'Ни разу';
@@ -132,6 +133,32 @@ export default function FunpayManagerTab() {
       console.error(err);
     } finally {
       setLotsLoading(false);
+    }
+  };
+
+  const handleToggleBot = async () => {
+    if (!selectedAccountId || !currentAccount) return;
+    setTogglingBot(true);
+    try {
+      const newActive = !currentAccount.is_active;
+      const res = await fetch(`${API_URL}/api/v1/accounts/${selectedAccountId}`, {
+        method: 'PUT',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ is_active: newActive })
+      });
+      if (res.ok) {
+        await fetchAccounts();
+      } else {
+        alert('Не удалось изменить режим бота');
+      }
+    } catch (err) {
+      console.error(err);
+      alert('Ошибка соединения');
+    } finally {
+      setTogglingBot(false);
     }
   };
 
@@ -221,14 +248,48 @@ export default function FunpayManagerTab() {
             <h1 className="text-xl sm:text-2xl font-black text-white tracking-tight">Funpay Manager</h1>
             
             {/* Выпадающий список аккаунтов */}
-            <div className="relative" ref={dropdownRef}>
+            <div className="relative flex items-center gap-2" ref={dropdownRef}>
               <button
                 onClick={() => setShowAccountDropdown(!showAccountDropdown)}
-                className="py-1.5 px-3 rounded-xl bg-slate-950/40 hover:bg-slate-950/60 border border-white/5 text-slate-300 hover:text-white text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer"
+                className="py-1.5 px-3 rounded-xl bg-slate-950/40 hover:bg-slate-950/60 border border-white/5 text-slate-300 hover:text-white text-xs font-bold transition-all flex items-center gap-2 cursor-pointer shrink-0"
               >
+                <span className={`w-1.5 h-1.5 rounded-full ${currentAccount?.is_active ? 'bg-emerald-400 animate-pulse' : 'bg-slate-500'}`} />
                 <span>{currentAccount?.name || 'Выберите аккаунт'}</span>
                 <ChevronDown className={`w-3.5 h-3.5 transition-transform ${showAccountDropdown ? 'rotate-180' : ''}`} />
               </button>
+
+              {/* Быстрая кнопка запуска/остановки бота */}
+              {currentAccount && (
+                <button
+                  onClick={handleToggleBot}
+                  disabled={togglingBot}
+                  className={`py-1.5 px-3 rounded-xl border text-[9px] font-black uppercase tracking-wider transition-all flex items-center gap-1.5 cursor-pointer shrink-0 ${
+                    currentAccount.is_active 
+                      ? 'bg-emerald-500/10 hover:bg-emerald-500/15 border-emerald-500/20 text-emerald-400 hover:shadow-lg hover:shadow-emerald-500/5' 
+                      : 'bg-white/5 hover:bg-white/10 border-white/5 text-slate-400 hover:text-white'
+                  }`}
+                  title={currentAccount.is_active ? 'Остановить работу бота' : 'Запустить работу бота'}
+                >
+                  {togglingBot ? (
+                    <Loader2 className="w-3 h-3 animate-spin text-slate-400" />
+                  ) : (
+                    <span className={`w-1.5 h-1.5 rounded-full ${currentAccount.is_active ? 'bg-emerald-400 animate-pulse' : 'bg-slate-500'}`} />
+                  )}
+                  <span>{currentAccount.is_active ? 'Остановить' : 'Запустить бота'}</span>
+                </button>
+              )}
+
+              {/* Статус и Последний синхрон */}
+              {currentAccount && (
+                <div className="hidden sm:flex flex-col text-left pl-1">
+                  <span className={`text-[8px] font-black uppercase tracking-wider leading-none ${currentAccount.is_active ? 'text-emerald-400 animate-pulse' : 'text-slate-500'}`}>
+                    {currentAccount.is_active ? '● БОТ АКТИВЕН' : '○ БОТ ВЫКЛЮЧЕН'}
+                  </span>
+                  <span className="text-[7.5px] text-slate-500 font-extrabold uppercase tracking-wider leading-none mt-1">
+                    Синхрон: {getTimeAgo(currentAccount.last_synced)}
+                  </span>
+                </div>
+              )}
 
               <AnimatePresence>
                 {showAccountDropdown && (
@@ -236,7 +297,7 @@ export default function FunpayManagerTab() {
                     initial={{ opacity: 0, y: 5 }}
                     animate={{ opacity: 1, y: 0 }}
                     exit={{ opacity: 0, y: 5 }}
-                    className="absolute top-full left-0 mt-1.5 w-60 rounded-2xl bg-[#090A0F]/95 border border-white/5 p-2 shadow-2xl backdrop-blur-md z-50 overflow-hidden"
+                    className="absolute top-full left-0 mt-1.5 w-72 rounded-2xl bg-[#090A0F]/95 border border-white/5 p-2 shadow-2xl backdrop-blur-md z-50 overflow-hidden"
                   >
                     {accounts.length === 0 ? (
                       <div className="text-center py-4 text-xs text-slate-500 font-semibold">Аккаунты не найдены</div>
@@ -248,14 +309,23 @@ export default function FunpayManagerTab() {
                             setSelectedAccountId(acc.id);
                             setShowAccountDropdown(false);
                           }}
-                          className={`w-full p-2.5 rounded-xl text-left text-xs font-bold transition-all flex items-center gap-2.5 cursor-pointer ${
+                          className={`w-full p-2.5 rounded-xl text-left text-xs font-bold transition-all flex items-center justify-between gap-2.5 cursor-pointer ${
                             selectedAccountId === acc.id 
                               ? 'bg-brand-cyan/10 text-brand-cyan' 
                               : 'text-slate-400 hover:text-white hover:bg-white/5'
                           }`}
                         >
-                          <span className={`w-1.5 h-1.5 rounded-full ${acc.is_active ? 'bg-emerald-400' : 'bg-slate-500'}`} />
-                          <span className="truncate">{acc.name}</span>
+                          <div className="flex items-center gap-2 min-w-0">
+                            <span className={`w-1.5 h-1.5 rounded-full ${acc.is_active ? 'bg-emerald-400' : 'bg-slate-500'}`} />
+                            <span className="truncate">{acc.name}</span>
+                          </div>
+                          <span className={`text-[8px] px-1.5 py-0.5 rounded-full font-bold uppercase tracking-wider shrink-0 ${
+                            acc.is_active 
+                              ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' 
+                              : 'bg-slate-500/10 text-slate-500 border border-white/5'
+                          }`}>
+                            {acc.is_active ? 'Бот активен' : 'Выключен'}
+                          </span>
                         </button>
                       ))
                     )}
@@ -350,23 +420,28 @@ export default function FunpayManagerTab() {
                   </div>
                 </div>
 
-                <div className="flex items-center gap-1.5 shrink-0">
-                  <button
-                    onClick={handleRaiseOffers}
-                    disabled={raising || !currentAccount}
-                    className="p-2 bg-indigo-500 hover:bg-indigo-600 text-slate-950 rounded-xl transition-all disabled:opacity-50 disabled:pointer-events-none hover:shadow-lg hover:shadow-indigo-500/20"
-                    title="Запустить ручное поднятие лотов во всех категориях"
-                  >
-                    {raising ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <RefreshCw className="w-3.5 h-3.5 text-slate-950 font-bold" />}
-                  </button>
-                  <button
-                    onClick={handleFullSync}
-                    disabled={syncing || !currentAccount}
-                    className="p-2 bg-brand-cyan hover:bg-brand-cyan/90 text-slate-950 rounded-xl transition-all disabled:opacity-50 disabled:pointer-events-none hover:shadow-lg hover:shadow-brand-cyan/20"
-                    title="Выполнить полную ручную синхронизацию профиля и лотов с Funpay"
-                  >
-                    {syncing ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Zap className="w-3.5 h-3.5 text-slate-950 font-bold fill-current" />}
-                  </button>
+                <div className="flex flex-col items-end gap-1 shrink-0">
+                  <div className="flex items-center gap-1.5">
+                    <button
+                      onClick={handleRaiseOffers}
+                      disabled={raising || !currentAccount}
+                      className="p-2 bg-indigo-500 hover:bg-indigo-600 text-slate-950 rounded-xl transition-all disabled:opacity-50 disabled:pointer-events-none hover:shadow-lg hover:shadow-indigo-500/20"
+                      title="Запустить ручное поднятие лотов во всех категориях"
+                    >
+                      {raising ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <RefreshCw className="w-3.5 h-3.5 text-slate-950 font-bold" />}
+                    </button>
+                    <button
+                      onClick={handleFullSync}
+                      disabled={syncing || !currentAccount}
+                      className="p-2 bg-brand-cyan hover:bg-brand-cyan/90 text-slate-950 rounded-xl transition-all disabled:opacity-50 disabled:pointer-events-none hover:shadow-lg hover:shadow-brand-cyan/20"
+                      title="Выполнить полную ручную синхронизацию профиля и лотов с Funpay"
+                    >
+                      {syncing ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Zap className="w-3.5 h-3.5 text-slate-950 font-bold fill-current" />}
+                    </button>
+                  </div>
+                  <span className="text-[7.5px] text-slate-500 font-extrabold uppercase tracking-wide">
+                    Синхрон: {getTimeAgo(currentAccount?.last_synced)}
+                  </span>
                 </div>
               </div>
             </div>
