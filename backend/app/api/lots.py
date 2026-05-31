@@ -6,20 +6,39 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlmodel import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import text
+import logging
 
 from app.database import get_session
 from app.api.deps import get_current_user
 from app.models.user import User, UserRole
 from app.models.account import FanpayAccount
 from app.models.lot import LotSettings
+from app.models.global_category import FunpayGlobalCategory
 from app.api.accounts import check_manager_permission, verify_account_access
 from app.services.fanpay_client import FanpayClient
+
+logger = logging.getLogger("fanpay.api.lots")
 
 # Схемы для ответов и запросов, связанных с аккаунтами на Funpay
 from app.api.accounts import AccountResponse
 
 router = APIRouter(prefix="/lots", tags=["Настройка Демпинга"])
 accounts_lots_router = APIRouter(prefix="/accounts", tags=["Демпинг и Синхронизация лотов"])
+
+class GlobalCategoryResponse(BaseModel):
+    id: int
+    game_name: str
+    subcategory_name: str
+    node_id: str
+    category_type: str
+
+    class Config:
+        from_attributes = True
+
+class NewLotCreatePayload(BaseModel):
+    node_id: str
+    fields: Dict[str, Any]
 
 class LotCreate(BaseModel):
     account_id: int
@@ -525,3 +544,153 @@ async def raise_account_lots(
                 pass
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")
+
+
+@router.post("/sync-global-categories", status_code=status.HTTP_200_OK)
+async def sync_global_categories(
+    db: AsyncSession = Depends(get_session),
+    current_user: User = Depends(get_current_user)
+) -> Any:
+    """Синхронизировать и спарсить все глобальные категории товаров с главной страницы Funpay."""
+    client = FanpayClient("", "", "", {})
+    categories = await client.parse_all_categories_and_subcategories()
+    if not categories:
+        raise HTTPException(status_code=400, detail="Не удалось спарсить категории. Проверьте соединение с Funpay.")
+    
+    # Очищаем таблицу и записываем новые
+    await db.execute(text("DELETE FROM funpay_global_categories"))
+    
+    added_count = 0
+    for game in categories:
+        game_name = game["game_name"]
+        for sub in game["subcategories"]:
+            query_check = select(FunpayGlobalCategory).where(FunpayGlobalCategory.node_id == sub["node_id"])
+            existing = (await db.execute(query_check)).scalar_one_or_none()
+            if not existing:
+                db_cat = FunpayGlobalCategory(
+                    game_name=game_name,
+                    subcategory_name=sub["name"],
+                    node_id=sub["node_id"],
+                    category_type=sub["type"]
+                )
+                db.add(db_cat)
+                added_count += 1
+                
+    await db.commit()
+    return {"success": True, "message": f"Успешно синхронизировано {added_count} подразделов с Funpay."}
+
+
+@router.get("/global-categories", response_model=List[GlobalCategoryResponse])
+async def list_global_categories(
+    q: Optional[str] = None,
+    db: AsyncSession = Depends(get_session),
+    current_user: User = Depends(get_current_user)
+) -> Any:
+    """Получить список всех доступных игр и категорий на FunPay с поиском."""
+    query = select(FunpayGlobalCategory)
+    if q:
+        search_filter = f"%{q.lower()}%"
+        query = query.where(
+            (FunpayGlobalCategory.game_name.ilike(search_filter)) |
+            (FunpayGlobalCategory.subcategory_name.ilike(search_filter))
+        )
+    query = query.order_by(FunpayGlobalCategory.game_name.asc(), FunpayGlobalCategory.subcategory_name.asc())
+    res = await db.execute(query)
+    return res.scalars().all()
+
+
+@accounts_lots_router.get("/{account_id}/lots/creation-form")
+async def get_creation_form(
+    account_id: int,
+    node_id: str,
+    db: AsyncSession = Depends(get_session),
+    current_user: User = Depends(get_current_user)
+) -> Any:
+    """Получить динамическую форму создания нового лота для указанной категории (node_id) с Funpay."""
+    account = await db.get(FanpayAccount, account_id)
+    if not account:
+        raise HTTPException(status_code=404, detail="Аккаунт не найден")
+        
+    await verify_account_access(db, current_user, account_id)
+    
+    client = FanpayClient(account.golden_key, account.proxy_url, account.user_agent, account.cookies)
+    details = await client.get_creation_form_details(node_id)
+    if not details:
+        raise HTTPException(status_code=400, detail="Не удалось загрузить форму создания лота. Возможно, неверный ID категории.")
+    return details
+
+
+@accounts_lots_router.post("/{account_id}/lots/create")
+async def create_new_lot(
+    account_id: int,
+    payload: NewLotCreatePayload,
+    db: AsyncSession = Depends(get_session),
+    current_user: User = Depends(get_current_user)
+) -> Any:
+    """Создать новый лот на FunPay в указанной категории (node_id)."""
+    account = await db.get(FanpayAccount, account_id)
+    if not account:
+        raise HTTPException(status_code=404, detail="Аккаунт не найден")
+        
+    await verify_account_access(db, current_user, account_id)
+    
+    client = FanpayClient(account.golden_key, account.proxy_url, account.user_agent, account.cookies)
+    success, message = await client.create_lot(payload.node_id, payload.fields)
+    if not success:
+        raise HTTPException(status_code=400, detail=f"Ошибка создания лота на Funpay: {message}")
+        
+    # Сразу после создания лота принудительно запускаем синхронизацию списка лотов аккаунта!
+    try:
+        lots = await client.get_active_lots()
+        if lots:
+            account.lots_cache = lots
+            account.last_synced = datetime.utcnow()
+            db.add(account)
+            await db.commit()
+    except Exception as sync_e:
+        logger.warning(f"Не удалось автоматически синхронизировать кэш лотов после создания: {sync_e}")
+        
+    return {"success": True, "message": message}
+
+
+@accounts_lots_router.delete("/{account_id}/lots/{lot_id}")
+async def delete_account_lot(
+    account_id: int,
+    lot_id: str,
+    db: AsyncSession = Depends(get_session),
+    current_user: User = Depends(get_current_user)
+) -> Any:
+    """Удалить лот непосредственно на FunPay."""
+    account = await db.get(FanpayAccount, account_id)
+    if not account:
+        raise HTTPException(status_code=404, detail="Аккаунт не найден")
+        
+    await verify_account_access(db, current_user, account_id)
+    
+    client = FanpayClient(account.golden_key, account.proxy_url, account.user_agent, account.cookies)
+    success = await client.delete_lot(lot_id)
+    if not success:
+        raise HTTPException(status_code=400, detail="Не удалось удалить лот на FunPay.")
+        
+    # Удаляем локальные настройки демпинга для этого лота, если они были
+    q_rule = select(LotSettings).where(
+        LotSettings.account_id == account_id,
+        LotSettings.lot_id == lot_id
+    )
+    rule_res = await db.execute(q_rule)
+    rule = rule_res.scalar_one_or_none()
+    if rule:
+        await db.delete(rule)
+        await db.commit()
+        
+    # Синхронизируем кэш лотов
+    try:
+        lots = await client.get_active_lots()
+        account.lots_cache = lots
+        account.last_synced = datetime.utcnow()
+        db.add(account)
+        await db.commit()
+    except Exception as sync_e:
+        logger.warning(f"Не удалось обновить кэш лотов после удаления: {sync_e}")
+        
+    return {"success": True, "message": "Лот успешно удален на FunPay!"}

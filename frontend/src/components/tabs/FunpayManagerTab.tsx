@@ -710,7 +710,7 @@ export default function FunpayManagerTab() {
                   }`}
                 >
                   <Sliders className="w-3.5 h-3.5" />
-                  <span>Лоты демпинга</span>
+                  <span>Лоты</span>
                 </button>
                 <button
                   onClick={() => setActiveSubTab('damping')}

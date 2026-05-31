@@ -1,7 +1,8 @@
 import { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { 
-  Zap, Loader2, Edit2, Check, X, Sliders, CheckCircle2, Play, ToggleLeft, ToggleRight
+  Zap, Loader2, Edit2, Check, X, Sliders, CheckCircle2, Play, ToggleLeft, ToggleRight,
+  Plus, Search, Sparkles, RefreshCw, Trash2
 } from 'lucide-react';
 import { useAppContext, API_URL } from '../../../context/AppContext';
 import { handleMouseMove } from '../../../utils/mouseTracker';
@@ -52,6 +53,128 @@ export default function LotsSubTab({
   const [templates, setTemplates] = useState<LotTemplate[]>([]);
   const [deliveryItems, setDeliveryItems] = useState<any[]>([]);
 
+  // Состояния для добавления нового лота
+  const [showCreateModal, setShowCreateModal] = useState(false);
+  const [globalCategories, setGlobalCategories] = useState<any[]>([]);
+  const [categoriesLoading, setCategoriesLoading] = useState(false);
+  const [searchCategoryQuery, setSearchCategoryQuery] = useState('');
+  const [selectedGlobalCategory, setSelectedGlobalCategory] = useState<any | null>(null);
+  
+  const [creationFormLoading, setCreationFormLoading] = useState(false);
+  const [creationForm, setCreationForm] = useState<any | null>(null);
+  const [creationFieldsValues, setCreationFieldsValues] = useState<Record<string, any>>({});
+  const [creatingLot, setCreatingLot] = useState(false);
+  const [syncingCategories, setSyncingCategories] = useState(false);
+
+  const fetchGlobalCategories = async (queryStr = '') => {
+    setCategoriesLoading(true);
+    try {
+      const url = queryStr 
+        ? `${API_URL}/api/v1/lots/global-categories?q=${encodeURIComponent(queryStr)}`
+        : `${API_URL}/api/v1/lots/global-categories`;
+      const res = await fetch(url, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setGlobalCategories(data);
+      }
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setCategoriesLoading(false);
+    }
+  };
+
+  const handleSyncGlobalCategories = async () => {
+    setSyncingCategories(true);
+    try {
+      const res = await fetch(`${API_URL}/api/v1/lots/sync-global-categories`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      const data = await res.json();
+      if (res.ok) {
+        alert(data.message);
+        fetchGlobalCategories(searchCategoryQuery);
+      } else {
+        alert(data.detail || 'Ошибка синхронизации категорий');
+      }
+    } catch {
+      alert('Ошибка соединения');
+    } finally {
+      setSyncingCategories(false);
+    }
+  };
+
+  const handleSelectGlobalCategory = async (cat: any) => {
+    setSelectedGlobalCategory(cat);
+    setCreationFormLoading(true);
+    setCreationForm(null);
+    try {
+      const res = await fetch(`${API_URL}/api/v1/accounts/${selectedAccountId}/lots/creation-form?node_id=${cat.node_id}`, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setCreationForm(data);
+        
+        // Пре-заполняем начальные значения полей
+        const initialVals: Record<string, any> = {};
+        if (data.form_fields) {
+          data.form_fields.forEach((f: any) => {
+            initialVals[f.name] = f.value;
+          });
+        }
+        setCreationFieldsValues(initialVals);
+      } else {
+        const err = await res.json();
+        alert(err.detail || 'Не удалось получить форму создания лота');
+        setSelectedGlobalCategory(null);
+      }
+    } catch {
+      alert('Ошибка соединения');
+      setSelectedGlobalCategory(null);
+    } finally {
+      setCreationFormLoading(false);
+    }
+  };
+
+  const handleCreateLotSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!selectedAccountId || !selectedGlobalCategory) return;
+    setCreatingLot(true);
+    try {
+      const res = await fetch(`${API_URL}/api/v1/accounts/${selectedAccountId}/lots/create`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          node_id: selectedGlobalCategory.node_id,
+          fields: creationFieldsValues
+        })
+      });
+      const data = await res.json();
+      if (res.ok) {
+        alert('Лот успешно создан на Funpay!');
+        setShowCreateModal(false);
+        setSelectedGlobalCategory(null);
+        setCreationForm(null);
+        setSearchCategoryQuery('');
+        // Обновляем список лотов на главной
+        loadLotsData();
+      } else {
+        alert(data.detail || 'Сбой создания лота');
+      }
+    } catch {
+      alert('Ошибка сети');
+    } finally {
+      setCreatingLot(false);
+    }
+  };
+
   // Редактирование цены в ячейке таблицы
   const [editingLotId, setEditingLotId] = useState<string | null>(null);
   const [editPrice, setEditPrice] = useState<string>('');
@@ -68,6 +191,35 @@ export default function LotsSubTab({
   const [nativeDelivery, setNativeDelivery] = useState<NativeDeliveryState | null>(null);
   const [customFields, setCustomFields] = useState<Record<string, any>>({});
   const [savingRule, setSavingRule] = useState(false);
+  const [deletingLotId, setDeletingLotId] = useState<string | null>(null);
+
+  const handleDeleteLot = async () => {
+    if (!selectedAccountId || !selectedLot) return;
+    if (!confirm(`Вы действительно хотите НАВСЕГДА УДАЛИТЬ лот "${selectedLot.lot_name}" с сайта FunPay? Резервная копия настроек демпинга также будет удалена.`)) {
+      return;
+    }
+    
+    setDeletingLotId(selectedLot.lot_id);
+    try {
+      const res = await fetch(`${API_URL}/api/v1/accounts/${selectedAccountId}/lots/${selectedLot.lot_id}`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      const data = await res.json();
+      if (res.ok) {
+        alert('Лот успешно удален на FunPay!');
+        setShowConfigModal(false);
+        setSelectedLot(null);
+        loadLotsData();
+      } else {
+        alert(data.detail || 'Не удалось удалить лот');
+      }
+    } catch {
+      alert('Ошибка соединения');
+    } finally {
+      setDeletingLotId(null);
+    }
+  };
 
   useEffect(() => {
     if (selectedAccountId && token) {
@@ -362,9 +514,22 @@ export default function LotsSubTab({
             <Zap className="w-4.5 h-4.5 text-brand-cyan" />
             <h2 className="text-sm font-bold text-white">Список ваших лотов на Funpay</h2>
           </div>
-          <span className="text-[9px] bg-white/5 border border-white/10 text-slate-400 px-2.5 py-0.5 rounded-full font-bold uppercase tracking-wider">
-            {lots.length} активных товаров
-          </span>
+          
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => {
+                setShowCreateModal(true);
+                fetchGlobalCategories(searchCategoryQuery);
+              }}
+              className="py-1.5 px-3 bg-brand-cyan/10 hover:bg-brand-cyan/15 border border-brand-cyan/20 text-brand-cyan rounded-xl font-bold text-[10px] uppercase tracking-wider flex items-center gap-1 cursor-pointer transition-all"
+            >
+              <Plus className="w-3.5 h-3.5" />
+              <span>Добавить лот</span>
+            </button>
+            <span className="text-[9px] bg-white/5 border border-white/10 text-slate-400 px-2.5 py-0.5 rounded-full font-bold uppercase tracking-wider">
+              {lots.length} активных товаров
+            </span>
+          </div>
         </div>
 
         {/* Фильтр по категориям */}
@@ -926,6 +1091,18 @@ export default function LotsSubTab({
                           {savingNative ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Check className="w-3.5 h-3.5 fill-current" />}
                           <span>Сохранить настройки на Funpay</span>
                         </button>
+
+                        <div className="pt-4 border-t border-white/5 mt-4">
+                          <button
+                            type="button"
+                            onClick={handleDeleteLot}
+                            disabled={deletingLotId !== null}
+                            className="w-full py-2.5 bg-rose-500/10 hover:bg-rose-500/15 border border-rose-500/20 text-rose-400 rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-1.5 cursor-pointer"
+                          >
+                            {deletingLotId ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Trash2 className="w-3.5 h-3.5" />}
+                            <span>Удалить этот лот с FunPay</span>
+                          </button>
+                        </div>
                       </div>
                     ) : (
                       <div className="py-12 text-center text-slate-500 text-xs italic">
@@ -934,6 +1111,216 @@ export default function LotsSubTab({
                     )}
                   </div>
                 </div>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* МОДАЛКА СОЗДАНИЯ НОВОГО ЛОТА */}
+      <AnimatePresence>
+        {showCreateModal && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-md overflow-hidden">
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95, y: 10 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95, y: 10 }}
+              transition={{ duration: 0.2 }}
+              className="bg-slate-900 border border-white/5 rounded-3xl w-full max-w-lg max-h-[85vh] flex flex-col shadow-2xl overflow-hidden relative"
+              onMouseMove={handleMouseMove}
+            >
+              <div className="glow-bg rounded-3xl" />
+              
+              {/* Шапка модалки */}
+              <div className="p-4 sm:p-5 border-b border-white/5 flex items-center justify-between relative z-10">
+                <div className="flex items-center gap-2">
+                  <Sparkles className="w-4.5 h-4.5 text-brand-cyan animate-pulse" />
+                  <h3 className="text-xs sm:text-sm font-bold text-white uppercase tracking-wider">
+                    {selectedGlobalCategory ? 'Заполнение формы лота' : 'Добавить новый лот'}
+                  </h3>
+                </div>
+                <button
+                  onClick={() => {
+                    setShowCreateModal(false);
+                    setSelectedGlobalCategory(null);
+                    setCreationForm(null);
+                    setSearchCategoryQuery('');
+                  }}
+                  className="p-1.5 hover:bg-white/5 rounded-lg text-slate-400 hover:text-white transition-colors cursor-pointer"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+
+              {/* Тело модалки */}
+              <div className="p-4 sm:p-5 flex-1 overflow-y-auto no-scrollbar relative z-10 text-xs">
+                {!selectedGlobalCategory ? (
+                  /* ШАГ 1: ВЫБОР КАТЕГОРИИ */
+                  <div className="space-y-4">
+                    <p className="text-slate-400 font-semibold leading-relaxed">
+                      Введите название игры или подраздела для поиска. Если база пуста — нажмите кнопку синхронизации, чтобы загрузить все доступные категории с Funpay.
+                    </p>
+
+                    <div className="flex gap-2">
+                      <div className="relative flex-1">
+                        <Search className="absolute left-3.5 top-2.5 w-4 h-4 text-slate-500" />
+                        <input
+                          type="text"
+                          placeholder="Поиск категории (например, Roblox)..."
+                          value={searchCategoryQuery}
+                          onChange={(e) => {
+                            setSearchCategoryQuery(e.target.value);
+                            fetchGlobalCategories(e.target.value);
+                          }}
+                          className="w-full bg-slate-950/40 border border-white/5 rounded-xl py-2 pl-10 pr-4 text-xs text-white focus:outline-none focus:border-brand-cyan/40"
+                        />
+                      </div>
+                      
+                      <button
+                        onClick={handleSyncGlobalCategories}
+                        disabled={syncingCategories}
+                        className="py-2 px-3.5 bg-brand-cyan/10 hover:bg-brand-cyan/15 border border-brand-cyan/20 text-brand-cyan rounded-xl font-bold uppercase tracking-wider flex items-center gap-1 cursor-pointer transition-all shrink-0 text-[10px]"
+                        title="Синхронизировать категории с главной страницы Funpay"
+                      >
+                        {syncingCategories ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <RefreshCw className="w-3.5 h-3.5" />}
+                        <span>Синхронизировать</span>
+                      </button>
+                    </div>
+
+                    {/* Результаты поиска */}
+                    <div className="space-y-1.5 max-h-64 overflow-y-auto pr-1">
+                      {categoriesLoading ? (
+                        <div className="text-center text-slate-500 py-6 animate-pulse">Загрузка категорий...</div>
+                      ) : globalCategories.length === 0 ? (
+                        <div className="text-center text-slate-500 py-6">
+                          Категории не найдены. Введите поисковый запрос или сделайте синхронизацию.
+                        </div>
+                      ) : (
+                        globalCategories.map((cat: any) => (
+                          <button
+                            key={cat.node_id}
+                            onClick={() => handleSelectGlobalCategory(cat)}
+                            className="w-full text-left p-2.5 bg-slate-950/20 hover:bg-slate-950/40 border border-white/5 hover:border-brand-cyan/15 rounded-xl flex items-center justify-between text-slate-300 hover:text-white transition-all cursor-pointer"
+                          >
+                            <div className="min-w-0">
+                              <span className="font-bold text-[11px] block truncate text-slate-200">
+                                {cat.game_name}
+                              </span>
+                              <span className="text-[10px] text-slate-400">
+                                {cat.subcategory_name}
+                              </span>
+                            </div>
+                            <span className="text-[9px] bg-slate-800 text-slate-400 px-2 py-0.5 rounded-full uppercase shrink-0 font-mono font-bold ml-2">
+                              node_id: {cat.node_id}
+                            </span>
+                          </button>
+                        ))
+                      )}
+                    </div>
+                  </div>
+                ) : (
+                  /* ШАГ 2: ЗАПОЛНЕНИЕ ФОРМЫ */
+                  <div className="space-y-4">
+                    <div className="p-3 bg-slate-950/40 border border-white/5 rounded-2xl flex items-center justify-between">
+                      <div>
+                        <span className="text-[10px] text-slate-400 font-bold block uppercase tracking-wider">Выбранная категория:</span>
+                        <span className="text-[11px] text-brand-cyan font-bold">
+                          {selectedGlobalCategory.game_name} / {selectedGlobalCategory.subcategory_name}
+                        </span>
+                      </div>
+                      <button
+                        onClick={() => setSelectedGlobalCategory(null)}
+                        className="py-1 px-2.5 bg-white/5 hover:bg-white/10 text-white rounded-lg font-bold text-[10px] transition-colors cursor-pointer"
+                      >
+                        Назад
+                      </button>
+                    </div>
+
+                    {creationFormLoading ? (
+                      <div className="py-12 flex flex-col items-center gap-2 text-slate-500">
+                        <Loader2 className="w-6 h-6 animate-spin text-brand-cyan" />
+                        <span className="animate-pulse">Загрузка формы с Funpay...</span>
+                      </div>
+                    ) : creationForm ? (
+                      <form onSubmit={handleCreateLotSubmit} className="space-y-3.5">
+                        <div className="space-y-3 max-h-96 overflow-y-auto pr-1.5 no-scrollbar">
+                          {creationForm.form_fields && creationForm.form_fields.map((f: any) => {
+                            const val = creationFieldsValues[f.name] ?? '';
+
+                            return (
+                              <div key={f.name} className="space-y-1">
+                                <label className="text-[10px] text-slate-400 font-bold uppercase tracking-wider block">
+                                  {f.label || f.name}
+                                </label>
+
+                                {f.type === 'select' ? (
+                                  <select
+                                    value={val}
+                                    onChange={(e) => setCreationFieldsValues({ ...creationFieldsValues, [f.name]: e.target.value })}
+                                    className="w-full bg-slate-950/60 border border-white/5 rounded-xl py-2 px-3 text-xs text-white focus:outline-none focus:border-brand-cyan/40"
+                                  >
+                                    {f.options && f.options.map((opt: any) => (
+                                      <option key={opt.value} value={opt.value}>
+                                        {opt.label}
+                                      </option>
+                                    ))}
+                                  </select>
+                                ) : f.type === 'textarea' ? (
+                                  <textarea
+                                    value={val}
+                                    onChange={(e) => setCreationFieldsValues({ ...creationFieldsValues, [f.name]: e.target.value })}
+                                    rows={3}
+                                    className="w-full bg-slate-950/60 border border-white/5 rounded-xl py-2 px-3 text-xs text-white focus:outline-none focus:border-brand-cyan/40 placeholder:text-slate-600 font-sans"
+                                    placeholder={`Введите ${f.label || f.name}...`}
+                                    required={f.name === 'fields[summary][ru]' || f.name === 'fields[desc][ru]'}
+                                  />
+                                ) : f.type === 'checkbox' ? (
+                                  <div className="flex items-center justify-between h-9 bg-slate-950/20 border border-white/5 px-3.5 rounded-xl">
+                                    <span className="text-slate-300 font-semibold">{f.label || f.name}</span>
+                                    <button
+                                      type="button"
+                                      onClick={() => setCreationFieldsValues({ ...creationFieldsValues, [f.name]: val === '1' ? '0' : '1' })}
+                                      className="cursor-pointer"
+                                    >
+                                      {val === '1' ? (
+                                        <ToggleRight className="w-7 h-7 text-brand-cyan" />
+                                      ) : (
+                                        <ToggleLeft className="w-7 h-7 text-slate-600" />
+                                      )}
+                                    </button>
+                                  </div>
+                                ) : (
+                                  <input
+                                    type={f.name === 'price' || f.name === 'amount' ? 'number' : 'text'}
+                                    step={f.name === 'price' ? '0.01' : '1'}
+                                    value={val}
+                                    onChange={(e) => setCreationFieldsValues({ ...creationFieldsValues, [f.name]: e.target.value })}
+                                    className="w-full bg-slate-950/60 border border-white/5 rounded-xl py-2 px-3 text-xs text-white focus:outline-none focus:border-brand-cyan/40"
+                                    placeholder={`Введите ${f.label || f.name}...`}
+                                    required={f.name === 'price' || f.name === 'amount'}
+                                  />
+                                )}
+                              </div>
+                            );
+                          })}
+                        </div>
+
+                        <button
+                          type="submit"
+                          disabled={creatingLot}
+                          className="w-full py-2.5 bg-brand-cyan hover:bg-brand-cyan/90 text-slate-950 rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-1.5 shadow-lg shadow-brand-cyan/10 border border-brand-cyan/20 cursor-pointer mt-3"
+                        >
+                          {creatingLot ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Check className="w-3.5 h-3.5" />}
+                          <span>Опубликовать новый лот на Funpay</span>
+                        </button>
+                      </form>
+                    ) : (
+                      <div className="py-12 text-center text-slate-500 italic">
+                        Не удалось получить структуру формы с Funpay.
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
             </motion.div>
           </div>

@@ -41,6 +41,7 @@ async def init_db() -> None:
         from app.models.competitor import CompetitorBlacklist
         from app.models.ai_key import AIKey
         from app.models.log import SystemLogs
+        from app.models.global_category import FunpayGlobalCategory
 
         await conn.run_sync(SQLModel.metadata.create_all)
         
