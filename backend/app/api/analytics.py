@@ -260,7 +260,23 @@ async def get_account_sales_stats(
     # Если в базе данных уже есть сохраненный кэш финансовой аналитики и не требуется принудительное обновление, возвращаем МГНОВЕННО!
     if not force_refresh and account.sales_stats_cache:
         logger.info(f"Возвращаем кэшированную финансовую статистику из БД для аккаунта {account_id}")
-        return account.sales_stats_cache
+        
+        # Получаем актуальный статус наличия рабочих ключей ИИ в БД на лету
+        key_obj = await AIService.get_next_key(db)
+        ai_key_exists = bool(key_obj)
+        
+        # Обновляем динамические ИИ поля в кэшированном ответе перед возвратом
+        stats = dict(account.sales_stats_cache)
+        stats["ai_key_exists"] = ai_key_exists
+        stats["ai_deep_audit"] = account.ai_audit_cache
+        stats["ai_audit_created_at"] = account.ai_audit_created_at.isoformat() if account.ai_audit_created_at else None
+        
+        # Также обновляем в кэшированной записи в БД для сохранности
+        account.sales_stats_cache = stats
+        db.add(account)
+        await db.commit()
+        
+        return stats
 
     client = FanpayClient(account.golden_key, account.proxy_url, account.user_agent, account.cookies)
     # Сбрасываем куки до чистой сессии golden_key, чтобы предотвратить конфликты CSRF/PHPSESSID при AJAX загрузке

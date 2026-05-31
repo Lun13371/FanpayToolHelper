@@ -24,6 +24,9 @@ export interface FanpayAccount {
   next_raise?: string;
   telegram_chat_id?: string;
   lots_cache?: any[];
+  global_damping_active?: boolean;
+  global_undercut_value?: number;
+  global_min_price?: number;
   created_at: string;
 }
 

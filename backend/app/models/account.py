@@ -27,6 +27,11 @@ class FanpayAccount(SQLModel, table=True):
     system_prompt: str = Field(default="Ты вежливый менеджер магазина. Отвечай кратко и помогай клиенту.")
     fallback_template: str = Field(default="В данный момент линия поддержки перегружена. Оператор ответит вам в течение нескольких минут.")
     
+    # Глобальные настройки демпинга
+    global_damping_active: bool = Field(default=False)
+    global_undercut_value: float = Field(default=0.01)
+    global_min_price: float = Field(default=0.0)
+    
     # Гео-данные прокси/подключения
     ip_address: Optional[str] = Field(default=None)
     geo_location: Optional[str] = Field(default=None)

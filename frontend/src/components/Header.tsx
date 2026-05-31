@@ -40,14 +40,6 @@ export default function Header() {
             Склад
           </button>
           <button
-            onClick={() => setActiveTab('dumping')}
-            className={`py-1.5 px-3.5 rounded-xl text-xs font-medium shrink-0 transition-all ${
-              activeTab === 'dumping' ? 'bg-white/10 text-white shadow-sm' : 'text-slate-400 hover:text-white'
-            }`}
-          >
-            Демпинг
-          </button>
-          <button
             onClick={() => setActiveTab('manager')}
             className={`py-1.5 px-3.5 rounded-xl text-xs font-medium shrink-0 transition-all ${
               activeTab === 'manager' ? 'bg-white/10 text-white shadow-sm' : 'text-slate-400 hover:text-white'

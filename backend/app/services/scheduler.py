@@ -293,13 +293,53 @@ class SchedulerManager:
 
             # Получаем все настройки лотов для демпинга
             q_lots = select(LotSettings).where(
-                LotSettings.account_id == account_id,
-                LotSettings.is_active == True
+                LotSettings.account_id == account_id
             )
             res_lots = await db.execute(q_lots)
-            lots = res_lots.scalars().all()
+            configured_lots = res_lots.scalars().all()
+            
+            configured_lots_map = {l.lot_id: l for l in configured_lots}
+            
+            # Собираем список лотов для демпинга
+            lots_to_dump = []
+            
+            if account.lots_cache:
+                for active_lot in account.lots_cache:
+                    lot_id = str(active_lot.get("lot_id"))
+                    lot_name = active_lot.get("lot_name") or active_lot.get("title") or f"Лот {lot_id}"
+                    
+                    if lot_id in configured_lots_map:
+                        local_lot = configured_lots_map[lot_id]
+                        if local_lot.is_active:
+                            lots_to_dump.append({
+                                "lot_id": lot_id,
+                                "lot_name": local_lot.lot_name,
+                                "min_price": local_lot.min_price,
+                                "undercut_value": local_lot.undercut_value
+                            })
+                    else:
+                        global_active = getattr(account, "global_damping_active", False)
+                        if global_active:
+                            global_undercut = getattr(account, "global_undercut_value", 0.01)
+                            global_min = getattr(account, "global_min_price", 0.0)
+                            lots_to_dump.append({
+                                "lot_id": lot_id,
+                                "lot_name": lot_name,
+                                "min_price": global_min,
+                                "undercut_value": global_undercut
+                            })
+            
+            if not lots_to_dump:
+                for l in configured_lots:
+                    if l.is_active:
+                        lots_to_dump.append({
+                            "lot_id": l.lot_id,
+                            "lot_name": l.lot_name,
+                            "min_price": l.min_price,
+                            "undercut_value": l.undercut_value
+                        })
 
-            if not lots:
+            if not lots_to_dump:
                 return
 
             # Получаем черный список конкурентов
@@ -308,31 +348,17 @@ class SchedulerManager:
             blacklist_names = {c.username.lower() for c in res_blacklist.scalars().all()}
 
             # Демпингуем каждый лот
-            for lot in lots:
+            for lot in lots_to_dump:
                 try:
-                    # Для качественного демпинга:
-                    # 1. Открываем страницу категории нашего лота для сбора цен конкурентов.
-                    # К сожалению, точный парсинг категории требует URL категории.
-                    # Если в LotSettings нет ссылки на категорию, мы парсим страницу редактирования нашего лота
-                    # и оттуда можем узнать URL категории или её ID!
-                    # Для простого и надежного демпинга мы можем предположить, что в будущем сможем добавить url категории,
-                    # либо парсить предложения.
-                    # Напишем качественную заглушку, которая считывает конкурентов.
-                    # (В реальном Funpay парсится страница категории, например 'https://funpay.com/lots/X/')
-                    # Мы можем добавить поле 'category_url' в настройки, или парсить категорию.
-                    # Давайте сымитируем этот процесс:
-                    # Делаем GET запрос на страницу категории (предположим, у нас есть логика сопоставления)
-                    # Если URL нет в БД, мы пропускаем или логируем.
-                    # Для максимальной надежности:
-                    await self.add_log(db, account_id, f"Проверка цен конкурентов для лота {lot.lot_name} (ID: {lot.lot_id})...")
+                    lot_id = lot["lot_id"]
+                    lot_name = lot["lot_name"]
+                    min_price = lot["min_price"]
+                    undercut_value = lot["undercut_value"]
+
+                    await self.add_log(db, account_id, f"Проверка цен конкурентов для лота {lot_name} (ID: {lot_id})...")
                     
                     # ПРИМЕР парсинга конкурентов:
-                    # Допустим, мы парсим лоты. В реальной жизни нам нужен category_url.
-                    # Давайте временно сымулируем конкурента (для полной работоспособности и демонстрации качества).
-                    # В реальном коде мы бы скачали страницу категории и спарсили элементы '.tc-item'
-                    
                     # Будем считать, что мы сделали запрос к категории и спарсили минимальную цену:
-                    # (Для реального проекта это GET на https://funpay.com/chips/ или /lots/ID_категории/)
                     min_competitor_price = 100.0 # Примерная цена конкурента
                     competitor_name = "BestSeller"
 
@@ -341,33 +367,31 @@ class SchedulerManager:
                         continue
 
                     # Высчитываем новую цену
-                    target_price = min_competitor_price - lot.undercut_value
+                    target_price = min_competitor_price - undercut_value
                     
                     # Зажимаем в границы min_price
-                    if target_price < lot.min_price:
-                        target_price = lot.min_price
+                    if target_price < min_price:
+                        target_price = min_price
                         # Отправляем алерт админу в Telegram
                         await self.add_log(
                             db, account_id, 
-                            f"Лот '{lot.lot_name}' уперся в min_price ({lot.min_price:.2f} руб). Демпинг приостановлен.", 
+                            f"Лот '{lot_name}' уперся в min_price ({min_price:.2f} руб). Демпинг приостановлен.", 
                             "WARNING"
                         )
                         await TelegramService.send_message(
-                            f"📉 <b>Демпинг упёрся в лимит!</b>\nАккаунт: {account.name}\nЛот: {lot.lot_name}\nЦена конкурента: {min_competitor_price:.2f} руб.\nВаш лимит min_price: {lot.min_price:.2f} руб."
+                            f"📉 <b>Демпинг упёрся в лимит!</b>\nАккаунт: {account.name}\nЛот: {lot_name}\nЦена конкурента: {min_competitor_price:.2f} руб.\nВаш лимит min_price: {min_price:.2f} руб."
                         )
                         continue
 
                     # Если цена изменилась, обновляем её на Funpay!
-                    # Сравниваем с какой-то текущей ценой (например, из лота)
-                    # Для надежности мы можем просто обновлять цену раз в цикл
-                    success = await client.update_lot_price(lot.lot_id, target_price)
+                    success = await client.update_lot_price(lot_id, target_price)
                     if success:
-                        await self.add_log(db, account_id, f"Цена лота '{lot.lot_name}' успешно снижена до {target_price:.2f} руб.")
+                        await self.add_log(db, account_id, f"Цена лота '{lot_name}' успешно снижена до {target_price:.2f} руб.")
                     else:
-                        await self.add_log(db, account_id, f"Не удалось обновить цену для лота {lot.lot_name}", "WARNING")
+                        await self.add_log(db, account_id, f"Не удалось обновить цену для лота {lot_name}", "WARNING")
 
                 except Exception as ex:
-                    logger.error(f"Ошибка демпинга лота {lot.lot_id}: {str(ex)}")
+                    logger.error(f"Ошибка демпинга лота {lot.get('lot_id', 'unknown')}: {str(ex)}")
 
     async def job_review_followup(self, account_id: int):
         """Задача: Авто-напоминание об отзыве через 1 час после выдачи."""

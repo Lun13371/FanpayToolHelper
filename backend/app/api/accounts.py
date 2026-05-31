@@ -34,6 +34,9 @@ class AccountUpdate(BaseModel):
     telegram_chat_id: Optional[str] = None
     system_prompt: Optional[str] = None
     fallback_template: Optional[str] = None
+    global_damping_active: Optional[bool] = None
+    global_undercut_value: Optional[float] = None
+    global_min_price: Optional[float] = None
 
 class AccountResponse(BaseModel):
     id: int
@@ -45,6 +48,11 @@ class AccountResponse(BaseModel):
     system_prompt: str
     fallback_template: str
     created_at: datetime
+    
+    # Глобальные настройки демпинга
+    global_damping_active: bool = False
+    global_undercut_value: float = 0.01
+    global_min_price: float = 0.0
     
     # Статистика аккаунта с Funpay
     funpay_user_id: Optional[str] = None

@@ -1,7 +1,7 @@
 import logging
 import re
 import json
-from typing import List, Optional, Tuple, Dict, Any
+from typing import List, Optional, Tuple, Dict, Any, AsyncGenerator
 from bs4 import BeautifulSoup
 import httpx
 
@@ -155,20 +155,22 @@ class FanpayClient:
                 logger.error(f"Ошибка при верификации сессии Funpay: {str(e)}")
                 return False, f"Connection error: {str(e)}", {}
 
-    async def raise_offers(self) -> Tuple[bool, str]:
+    async def raise_offers_generator(self) -> AsyncGenerator[Dict[str, Any], None]:
         """
-        Парсит лоты из публичного профиля, находит их подразделы (/trade) и отправляет запросы на поднятие.
+        Генератор, который парсит лоты и поднимает их категории, отправляя информацию о прогрессе.
         """
         async with self._get_client() as client:
             try:
-                # 1. Загружаем главную страницу для извлечения ID пользователя и CSRF-токена
+                yield {"type": "init", "progress": 5, "message": "Инициализация: Получение CSRF токена..."}
                 main_resp = await client.get("https://funpay.com/")
                 if main_resp.status_code != 200:
-                    return False, f"Не удалось загрузить главную страницу. Код: {main_resp.status_code}"
+                    yield {"type": "error", "progress": 100, "message": f"Не удалось загрузить главную страницу. Код: {main_resp.status_code}"}
+                    return
                 
                 csrf_token = self._extract_csrf_token(main_resp.text)
                 if not csrf_token:
-                    return False, "Не удалось извлечь CSRF токен для автоподнятия"
+                    yield {"type": "error", "progress": 100, "message": "Не удалось извлечь CSRF токен для автоподнятия"}
+                    return
 
                 soup_main = BeautifulSoup(main_resp.text, "html.parser")
                 body = soup_main.find("body")
@@ -183,91 +185,221 @@ class FanpayClient:
                 if not user_id:
                     user_id = "20052933" # Дефолтный ID
                 
-                # 2. Получаем активные лоты из публичного профиля
+                yield {"type": "init", "progress": 15, "message": f"Загрузка профиля пользователя (ID: {user_id})..."}
                 profile_url = f"https://funpay.com/users/{user_id}/"
                 profile_resp = await client.get(profile_url)
                 if profile_resp.status_code != 200:
-                    return False, f"Не удалось получить профиль пользователя. Код: {profile_resp.status_code}"
+                    yield {"type": "error", "progress": 100, "message": f"Не удалось получить профиль пользователя. Код: {profile_resp.status_code}"}
+                    return
                 
                 soup_prof = BeautifulSoup(profile_resp.text, "html.parser")
                 rows = soup_prof.find_all("a", class_="tc-item")
                 if not rows:
-                    return True, "У вас нет активных лотов для поднятия."
+                    yield {"type": "empty", "progress": 100, "message": "У вас нет активных лотов для поднятия."}
+                    return
                 
-                # Собираем уникальные lot_id
+                # Собираем уникальные lot_id и их названия игр из профиля
                 lot_ids = []
+                lot_game_map = {}
                 for row in rows:
                     href = row.get("href", "")
                     lot_id_match = re.search(r"id=(\d+)", href)
                     if lot_id_match:
-                        lot_ids.append(lot_id_match.group(1))
+                        lot_id = lot_id_match.group(1)
+                        lot_ids.append(lot_id)
+                        
+                        # Находим заголовок категории/игры внутри контейнера 'offer'
+                        game_name = ""
+                        offer_parent = row.find_parent(class_="offer")
+                        if offer_parent:
+                            title_div = offer_parent.find(class_="offer-list-title") or offer_parent.find(class_="offer-list-title-container")
+                            if title_div:
+                                game_name = title_div.text.strip()
+                            if not game_name:
+                                h3 = offer_parent.find("h3")
+                                if h3:
+                                    game_name = h3.text.strip()
+                        
+                        # Если не нашли, попробуем старый метод обхода в качестве запасного
+                        if not game_name:
+                            curr = row
+                            while curr:
+                                sibling = curr.find_previous_sibling(class_=re.compile(r"tc-header|tc-game", re.I)) or curr.find_previous_sibling(class_="tc-header")
+                                if sibling:
+                                    game_name = sibling.text.strip()
+                                    break
+                                
+                                parent = curr.parent
+                                if parent:
+                                    header = parent.find(class_=re.compile(r"tc-header|tc-game", re.I)) or parent.find(class_="tc-header")
+                                    if header:
+                                        game_name = header.text.strip()
+                                        break
+                                else:
+                                    break
+                                curr = parent
+                        
+                        if game_name:
+                            # Очищаем лишние пробелы и переносы
+                            game_name = re.sub(r"\s+", " ", game_name).strip()
+                            lot_game_map[lot_id] = game_name
                 
-                # 3. Для каждого лота находим node_id со страницы редактирования
-                # Группируем по уникальным node_id, чтобы не отправлять лишние запросы
-                raised_categories = []
+                # Ограничим первыми 5 лотами для безопасности и скорости
+                target_lot_ids = lot_ids[:5]
+                total_lots = len(target_lot_ids)
+                
+                yield {"type": "init", "progress": 25, "message": f"Найдено лотов для проверки: {total_lots}. Начинаем обход..."}
+                
                 processed_nodes = set()
                 
-                for lot_id in lot_ids[:5]: # Ограничим первыми 5 лотами для безопасности и скорости
+                for idx, lot_id in enumerate(target_lot_ids):
+                    current_progress = 25 + int(((idx + 1) / total_lots) * 70)
+                    yield {"type": "lot_start", "progress": current_progress, "message": f"Анализ лота {idx + 1}/{total_lots} (ID: {lot_id})..."}
+                    
                     edit_url = f"https://funpay.com/lots/offerEdit?offer={lot_id}"
                     edit_resp = await client.get(edit_url)
                     if edit_resp.status_code != 200:
+                        yield {"type": "log", "message": f"Не удалось загрузить страницу редактирования для лота {lot_id}"}
                         continue
                     
                     soup_edit = BeautifulSoup(edit_resp.text, "html.parser")
                     node_input = soup_edit.find("input", {"name": "node_id"})
                     node_id = node_input.get("value") if node_input else None
                     
-                    if not node_id or node_id in processed_nodes:
+                    if not node_id:
+                        yield {"type": "log", "message": f"Не удалось найти node_id для лота {lot_id}"}
+                        continue
+                        
+                    if node_id in processed_nodes:
+                        yield {"type": "log", "message": f"Раздел для node_id {node_id} уже обработан ранее."}
                         continue
                     
                     processed_nodes.add(node_id)
                     
-                    # 4. Загружаем страницу раздела /trade для получения game_id и актуальной кнопки поднятия
                     trade_url = f"https://funpay.com/lots/{node_id}/trade"
                     trade_resp = await client.get(trade_url)
                     if trade_resp.status_code != 200:
+                        yield {"type": "log", "message": f"Не удалось загрузить раздел {node_id}"}
                         continue
                     
                     soup_trade = BeautifulSoup(trade_resp.text, "html.parser")
                     btn_raise = soup_trade.find("button", class_=re.compile(r"raise", re.I)) or soup_trade.find(class_=re.compile(r"raise", re.I))
                     
-                    if btn_raise:
-                        game_id = btn_raise.get("data-game")
-                        node_id_from_btn = btn_raise.get("data-node") or node_id
-                        category_name = btn_raise.text.strip().replace("\n", " ") or f"Раздел {node_id}"
-                        # Очищаем лишние пробелы в названии категории
-                        category_name = re.sub(r'\s+', ' ', category_name).strip()
+                    if not btn_raise:
+                        yield {"type": "log", "message": f"Кнопка поднятия в разделе {node_id} не найдена."}
+                        continue
                         
-                        if game_id and node_id_from_btn:
-                            # 5. Выполняем POST запрос на поднятие лотов
-                            raise_url = "https://funpay.com/lots/raise"
-                            payload = {
-                                "game_id": game_id,
-                                "node_id": node_id_from_btn,
-                                "csrf_token": csrf_token
+                    game_id = btn_raise.get("data-game")
+                    node_id_from_btn = btn_raise.get("data-node") or node_id
+                    
+                    # 1. Сначала берем название игры, которое мы сохранили из публичного профиля
+                    category_name = lot_game_map.get(lot_id, "")
+                    
+                    # 2. Пытаемся дополнить/найти из хлебных крошек или h1 страницы раздела
+                    trade_category = ""
+                    breadcrumb = soup_trade.find(class_="breadcrumb")
+                    if breadcrumb:
+                        lis = [li.text.strip() for li in breadcrumb.find_all("li") if li.text.strip()]
+                        # Исключаем главный пункт "FunPay"
+                        if lis and lis[0].lower() in ("funpay", "фанпей"):
+                            lis = lis[1:]
+                        # Фильтруем технические слова типа "Ваши предложения" из хлебных крошек
+                        lis = [item for item in lis if not any(w in item.lower() for w in ("ваши предложения", "ваши предложения", "ваши товары", "поднять", "управление", "предложения"))]
+                        if lis:
+                            trade_category = " / ".join(lis)
+                    
+                    if not trade_category:
+                        h1 = soup_trade.find("h1")
+                        if h1:
+                            h1_text = h1.text.strip()
+                            if not any(w in h1_text.lower() for w in ("ваши предложения", "ваши товары", "поднять", "управление", "предложения")):
+                                trade_category = h1_text
+                    
+                    # Если нашли красивое название подраздела, используем его, иначе используем имя игры из профиля
+                    if trade_category:
+                        category_name = trade_category
+                    
+                    if not category_name:
+                        category_name = btn_raise.text.strip().replace("\n", " ") or f"Раздел {node_id}"
+                        category_name = re.sub(r"\s+", " ", category_name).strip()
+                        if any(w in category_name.lower() for w in ("поднять", "предложен", "ваши")):
+                            category_name = f"Раздел {node_id}"
+                    
+                    if not (game_id and node_id_from_btn):
+                        yield {"type": "log", "message": f"Некорректные параметры game_id/node_id для {category_name}"}
+                        continue
+                        
+                    # Выполняем POST запрос на поднятие лотов
+                    raise_url = "https://funpay.com/lots/raise"
+                    payload = {
+                        "game_id": game_id,
+                        "node_id": node_id_from_btn,
+                        "csrf_token": csrf_token
+                    }
+                    headers = {
+                        "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+                        "X-Requested-With": "XMLHttpRequest"
+                    }
+                    
+                    raise_res = await client.post(raise_url, data=payload, headers=headers)
+                    if raise_res.status_code == 200:
+                        res_json = raise_res.json()
+                        if res_json.get("success", False):
+                            yield {
+                                "type": "success",
+                                "category": category_name,
+                                "progress": current_progress,
+                                "message": "Лоты успешно подняты!"
                             }
-                            headers = {
-                                "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
-                                "X-Requested-With": "XMLHttpRequest"
+                        else:
+                            msg = res_json.get("desc", "Кулдаун")
+                            yield {
+                                "type": "cooldown",
+                                "category": category_name,
+                                "progress": current_progress,
+                                "message": msg
                             }
-                            
-                            raise_res = await client.post(raise_url, data=payload, headers=headers)
-                            if raise_res.status_code == 200:
-                                res_json = raise_res.json()
-                                if res_json.get("success", False):
-                                    raised_categories.append(category_name)
-                                else:
-                                    msg = res_json.get("desc", "Кулдаун")
-                                    logger.info(f"Категория {category_name} не поднята: {msg}")
+                    else:
+                        yield {
+                            "type": "error",
+                            "category": category_name,
+                            "progress": current_progress,
+                            "message": f"Ошибка запроса к Funpay: {raise_res.status_code}"
+                        }
                 
-                if raised_categories:
-                    return True, f"Успешно подняты категории: {', '.join(raised_categories)}"
-                else:
-                    return True, "Все категории находятся в кулдауне поднятия или подняты ранее."
+                yield {"type": "done", "progress": 100, "message": "Поднятие лотов завершено!"}
                     
             except Exception as e:
-                logger.error(f"Исключение при автоподнятии лотов: {str(e)}")
-                return False, f"Исключение: {str(e)}"
+                logger.error(f"Исключение при ручном поднятии лотов: {str(e)}")
+                yield {"type": "error", "progress": 100, "message": f"Исключение: {str(e)}"}
+
+    async def raise_offers(self) -> Tuple[bool, str]:
+        """
+        Парсит лоты из публичного профиля, находит их подразделы (/trade) и отправляет запросы на поднятие.
+        """
+        raised_categories = []
+        has_errors = False
+        last_error = None
+        has_any_attempts = False
+        
+        async for step in self.raise_offers_generator():
+            if step["type"] == "success":
+                raised_categories.append(step["category"])
+                has_any_attempts = True
+            elif step["type"] in ("cooldown", "error"):
+                has_any_attempts = True
+                if step["type"] == "error":
+                    has_errors = True
+                    last_error = step["message"]
+            elif step["type"] == "empty":
+                return True, "У вас нет активных лотов для поднятия."
+                
+        if raised_categories:
+            return True, f"Успешно подняты категории: {', '.join(raised_categories)}"
+        elif has_errors and not has_any_attempts:
+            return False, f"Ошибка при поднятии: {last_error}"
+        else:
+            return True, "Все категории находятся в кулдауне поднятия или подняты ранее."
 
     async def get_paid_orders(self) -> List[Dict[str, Any]]:
         """

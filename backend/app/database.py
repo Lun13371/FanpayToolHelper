@@ -109,3 +109,24 @@ async def init_db() -> None:
             await conn.execute(text("ALTER TABLE fanpay_accounts ADD COLUMN sales_stats_cache JSON"))
     except Exception:
         pass
+
+    # 10. global_damping_active
+    try:
+        async with engine.begin() as conn:
+            await conn.execute(text("ALTER TABLE fanpay_accounts ADD COLUMN global_damping_active BOOLEAN DEFAULT FALSE"))
+    except Exception:
+        pass
+
+    # 11. global_undercut_value
+    try:
+        async with engine.begin() as conn:
+            await conn.execute(text("ALTER TABLE fanpay_accounts ADD COLUMN global_undercut_value FLOAT DEFAULT 0.01"))
+    except Exception:
+        pass
+
+    # 12. global_min_price
+    try:
+        async with engine.begin() as conn:
+            await conn.execute(text("ALTER TABLE fanpay_accounts ADD COLUMN global_min_price FLOAT DEFAULT 0.0"))
+    except Exception:
+        pass

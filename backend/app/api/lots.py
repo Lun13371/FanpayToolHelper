@@ -1,6 +1,8 @@
 from typing import Any, List, Optional, Dict
+import json
 from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlmodel import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -485,7 +487,7 @@ async def raise_account_lots(
     db: AsyncSession = Depends(get_session),
     current_user: User = Depends(get_current_user)
 ) -> Any:
-    """Вручную запускает поднятие лотов на Funpay."""
+    """Вручную запускает поднятие лотов на Funpay с трансляцией прогресса."""
     account = await db.get(FanpayAccount, account_id)
     if not account:
         raise HTTPException(status_code=404, detail="Аккаунт не найден")
@@ -503,11 +505,23 @@ async def raise_account_lots(
         cookies=account.cookies
     )
 
-    success, message = await client.raise_offers()
-    
-    if success:
-        account.last_raised = datetime.utcnow()
-        db.add(account)
-        await db.commit()
+    async def event_generator():
+        success = False
+        raised_any = False
+        async for event in client.raise_offers_generator():
+            if event.get("type") == "success":
+                raised_any = True
+                success = True
+            elif event.get("type") == "cooldown":
+                raised_any = True
+            yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+        
+        if success or raised_any:
+            try:
+                account.last_raised = datetime.utcnow()
+                db.add(account)
+                await db.commit()
+            except Exception:
+                pass
 
-    return {"success": success, "message": message}
+    return StreamingResponse(event_generator(), media_type="text/event-stream")

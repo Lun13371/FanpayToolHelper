@@ -1,8 +1,8 @@
 import { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { 
-  Wallet, Star, RefreshCw, ChevronDown, Terminal, TrendingUp,
-  Zap, Loader2, MessageSquare, Sliders, Settings
+  Wallet, Star, RefreshCw, ChevronDown, ChevronUp, Terminal, TrendingUp,
+  Zap, Loader2, MessageSquare, Sliders, Settings, X, CheckCircle2, Clock, AlertTriangle, HelpCircle, Radio
 } from 'lucide-react';
 import { useAppContext, API_URL } from '../../context/AppContext';
 
@@ -10,6 +10,7 @@ import LotsSubTab from './funpay-manager/LotsSubTab';
 import ChatsSubTab from './funpay-manager/ChatsSubTab';
 import SettingsSubTab from './funpay-manager/SettingsSubTab';
 import LogsSubTab from './funpay-manager/LogsSubTab';
+import DampingSubTab from './funpay-manager/DampingSubTab';
 import AnalyticsSection from './funpay-manager/AnalyticsSection';
 
 interface FunpayLot {
@@ -26,7 +27,7 @@ export default function FunpayManagerTab() {
   const currentAccount = accounts.find(a => a.id === selectedAccountId);
 
   const [globalMode, setGlobalMode] = useState<'control' | 'analytics'>('control');
-  const [activeSubTab, setActiveSubTab] = useState<'chats' | 'lots' | 'settings' | 'logs'>('lots');
+  const [activeSubTab, setActiveSubTab] = useState<'chats' | 'lots' | 'settings' | 'logs' | 'damping'>('lots');
   
   const [showAccountDropdown, setShowAccountDropdown] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
@@ -44,6 +45,11 @@ export default function FunpayManagerTab() {
   const [syncing, setSyncing] = useState(false);
   const [syncProgress, setSyncProgress] = useState(0);
   const [syncStepText, setSyncStepText] = useState('');
+  const [raiseProgress, setRaiseProgress] = useState(0);
+  const [raiseStepText, setRaiseStepText] = useState('');
+  const [raiseLogs, setRaiseLogs] = useState<Array<{category?: string; status: 'success' | 'cooldown' | 'error' | 'log' | 'info'; message: string}>>([]);
+  const [showRaiseStats, setShowRaiseStats] = useState(false);
+  const [isStatsCollapsed, setIsStatsCollapsed] = useState(false);
   const [raiseCountdown, setRaiseCountdown] = useState<string>('');
   const [lots, setLots] = useState<FunpayLot[]>([]);
   const [lotsLoading, setLotsLoading] = useState(false);
@@ -221,18 +227,90 @@ export default function FunpayManagerTab() {
   const handleRaiseOffers = async () => {
     if (!selectedAccountId) return;
     setRaising(true);
+    setRaiseProgress(5);
+    setRaiseStepText('Инициализация поднятия...');
+    setRaiseLogs([]);
+    setShowRaiseStats(true);
+    setIsStatsCollapsed(false);
+
     try {
       const res = await fetch(`${API_URL}/api/v1/accounts/${selectedAccountId}/raise`, {
         method: 'POST',
-        headers: { Authorization: `Bearer ${token}` }
+        headers: { 
+          Authorization: `Bearer ${token}`,
+          Accept: 'text/event-stream'
+        }
       });
-      const data = await res.json();
-      alert(data.message);
-      if (res.ok) {
-        await fetchAccounts();
+
+      if (!res.ok) {
+        throw new Error('Не удалось запустить поднятие. Проверьте соединение.');
       }
-    } catch {
-      alert('Ошибка при поднятии лотов');
+
+      const reader = res.body?.getReader();
+      if (!reader) {
+        throw new Error('Поток данных недоступен');
+      }
+
+      const decoder = new TextDecoder('utf-8');
+      let buffer = '';
+
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed.startsWith('data: ')) continue;
+
+          const jsonStr = trimmed.slice(6);
+          try {
+            const event = JSON.parse(jsonStr);
+
+            if (event.progress !== undefined) {
+              setRaiseProgress(event.progress);
+            }
+            if (event.message) {
+              setRaiseStepText(event.message);
+            }
+
+            if (event.type === 'success' || event.type === 'cooldown' || event.type === 'error' || event.type === 'log') {
+              setRaiseLogs(prev => [
+                ...prev,
+                {
+                  category: event.category,
+                  status: event.type,
+                  message: event.message || (event.type === 'success' ? 'Лоты успешно подняты' : 'Кулдаун')
+                }
+              ]);
+            } else if (event.type === 'empty') {
+              setRaiseLogs(prev => [
+                ...prev,
+                {
+                  status: 'info',
+                  message: event.message
+                }
+              ]);
+            }
+          } catch (e) {
+            console.error('Ошибка парсинга SSE сообщения:', e);
+          }
+        }
+      }
+
+      await fetchAccounts();
+    } catch (err: any) {
+      console.error(err);
+      setRaiseLogs(prev => [
+        ...prev,
+        {
+          status: 'error',
+          message: err.message || 'Ошибка соединения с сервером при поднятии лотов'
+        }
+      ]);
     } finally {
       setRaising(false);
     }
@@ -476,6 +554,150 @@ export default function FunpayManagerTab() {
             )}
           </AnimatePresence>
 
+          {/* ПОЛОСА ЗАГРУЗКИ ПОДНЯТИЯ ЛОТОВ (ВРУЧНУЮ) */}
+          <AnimatePresence>
+            {raising && (
+              <motion.div
+                initial={{ opacity: 0, height: 0 }}
+                animate={{ opacity: 1, height: 'auto' }}
+                exit={{ opacity: 0, height: 0 }}
+                className="relative z-10 pt-4 overflow-hidden"
+              >
+                <div className="p-4 rounded-2xl bg-indigo-500/5 border border-indigo-500/15 space-y-3">
+                  <div className="flex items-center justify-between text-[11px] font-bold">
+                    <span className="text-slate-300 animate-pulse">{raiseStepText}</span>
+                    <span className="text-indigo-400">{raiseProgress}%</span>
+                  </div>
+                  <div className="h-2 bg-slate-950/60 rounded-full overflow-hidden">
+                    <motion.div
+                      className="bg-gradient-to-r from-indigo-500 to-brand-cyan h-full rounded-full"
+                      initial={{ width: '0%' }}
+                      animate={{ width: `${raiseProgress}%` }}
+                      transition={{ ease: 'easeOut', duration: 0.15 }}
+                    />
+                  </div>
+                </div>
+              </motion.div>
+            )}
+          </AnimatePresence>
+
+          {/* СТАТИСТИКА ПОДНЯТИЯ ЛОТОВ */}
+          <AnimatePresence>
+            {showRaiseStats && (
+              <motion.div
+                initial={{ opacity: 0, y: 15 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: 15 }}
+                className="relative z-10 pt-4"
+              >
+                <div className="p-4 rounded-2xl bg-slate-900/40 border border-white/5 space-y-3 shadow-xl backdrop-blur-md">
+                  {/* Заголовок статистики */}
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <Terminal className="w-4 h-4 text-indigo-400" />
+                      <span className="text-xs font-bold text-white uppercase tracking-wider">
+                        Статистика поднятия лотов
+                      </span>
+                      <span className="text-[10px] bg-slate-800 text-slate-400 px-2 py-0.5 rounded-full font-mono font-bold">
+                        {raiseLogs.length} событий
+                      </span>
+                    </div>
+
+                    <div className="flex items-center gap-1.5">
+                      <button
+                        onClick={() => setIsStatsCollapsed(!isStatsCollapsed)}
+                        className="p-1.5 hover:bg-white/5 rounded-lg text-slate-400 hover:text-white transition-all cursor-pointer"
+                        title={isStatsCollapsed ? "Развернуть" : "Свернуть"}
+                      >
+                        {isStatsCollapsed ? <ChevronDown className="w-3.5 h-3.5" /> : <ChevronUp className="w-3.5 h-3.5" />}
+                      </button>
+                      <button
+                        onClick={() => setShowRaiseStats(false)}
+                        className="p-1.5 hover:bg-rose-500/15 rounded-lg text-slate-400 hover:text-rose-400 transition-all cursor-pointer"
+                        title="Закрыть логи"
+                      >
+                        <X className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Сводные бейджи */}
+                  {!isStatsCollapsed && (
+                    <div className="flex flex-wrap gap-2 text-[10px] font-bold">
+                      <span className="flex items-center gap-1 bg-emerald-500/10 border border-emerald-500/15 text-emerald-400 px-2 py-1 rounded-lg">
+                        <CheckCircle2 className="w-3 h-3" />
+                        Поднято: {raiseLogs.filter(l => l.status === 'success').length}
+                      </span>
+                      <span className="flex items-center gap-1 bg-amber-500/10 border border-amber-500/15 text-amber-400 px-2 py-1 rounded-lg">
+                        <Clock className="w-3 h-3" />
+                        Кулдаун: {raiseLogs.filter(l => l.status === 'cooldown').length}
+                      </span>
+                      {raiseLogs.some(l => l.status === 'error') && (
+                        <span className="flex items-center gap-1 bg-rose-500/10 border border-rose-500/15 text-rose-400 px-2 py-1 rounded-lg">
+                          <AlertTriangle className="w-3 h-3" />
+                          Ошибок: {raiseLogs.filter(l => l.status === 'error').length}
+                        </span>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Сводный список */}
+                  {!isStatsCollapsed && (
+                    <div className="max-h-48 overflow-y-auto rounded-xl bg-slate-950/50 border border-white/5 p-2 space-y-1.5 scrollbar-thin scrollbar-thumb-white/10">
+                      {raiseLogs.length === 0 ? (
+                        <div className="text-center text-slate-500 text-xs py-4 flex flex-col items-center gap-1">
+                          <HelpCircle className="w-5 h-5 text-slate-600 animate-pulse" />
+                          <span>Получение данных о лотах...</span>
+                        </div>
+                      ) : (
+                        raiseLogs.map((log, index) => {
+                          const isSuccess = log.status === 'success';
+                          const isCooldown = log.status === 'cooldown';
+                          const isError = log.status === 'error';
+                          
+                          let statusColor = "text-slate-400 bg-slate-500/5 border-slate-500/10";
+                          let Icon = HelpCircle;
+                          
+                          if (isSuccess) {
+                            statusColor = "text-emerald-400 bg-emerald-500/5 border-emerald-500/10";
+                            Icon = CheckCircle2;
+                          } else if (isCooldown) {
+                            statusColor = "text-amber-400 bg-amber-500/5 border-amber-500/10";
+                            Icon = Clock;
+                          } else if (isError) {
+                            statusColor = "text-rose-400 bg-rose-500/5 border-rose-500/10";
+                            Icon = AlertTriangle;
+                          }
+
+                          return (
+                            <div 
+                              key={index}
+                              className={`flex items-start justify-between gap-3 p-2 rounded-lg border text-xs transition-all ${statusColor}`}
+                            >
+                              <div className="flex items-start gap-2.5 min-w-0">
+                                <Icon className="w-3.5 h-3.5 mt-0.5 shrink-0" />
+                                <div className="min-w-0">
+                                  {log.category && (
+                                    <span className="font-semibold text-slate-200 block truncate">
+                                      {log.category}
+                                    </span>
+                                  )}
+                                  <span className="opacity-90 leading-normal block">
+                                    {log.message}
+                                  </span>
+                                </div>
+                              </div>
+                            </div>
+                          );
+                        })
+                      )}
+                    </div>
+                  )}
+                </div>
+              </motion.div>
+            )}
+          </AnimatePresence>
+
           {/* ГЛОБАЛЬНЫЙ РЕЖИМ: УПРАВЛЕНИЕ */}
           {globalMode === 'control' && (
             <>
@@ -489,6 +711,15 @@ export default function FunpayManagerTab() {
                 >
                   <Sliders className="w-3.5 h-3.5" />
                   <span>Лоты демпинга</span>
+                </button>
+                <button
+                  onClick={() => setActiveSubTab('damping')}
+                  className={`py-2 px-3.5 md:px-5 rounded-xl text-[11px] md:text-xs font-bold transition-all flex items-center justify-center md:justify-start gap-1.5 flex-1 md:flex-none cursor-pointer ${
+                    activeSubTab === 'damping' ? 'bg-white/10 text-white' : 'text-slate-400 hover:text-white'
+                  }`}
+                >
+                  <Radio className="w-3.5 h-3.5" />
+                  <span>Настройка демпинга</span>
                 </button>
                 <button
                   onClick={() => setActiveSubTab('chats')}
@@ -531,6 +762,9 @@ export default function FunpayManagerTab() {
                       getTimeAgo={getTimeAgo}
                       raiseCountdown={raiseCountdown}
                     />
+                  )}
+                  {activeSubTab === 'damping' && (
+                    <DampingSubTab lots={lots} />
                   )}
                   {activeSubTab === 'chats' && <ChatsSubTab />}
                   {activeSubTab === 'settings' && <SettingsSubTab />}
