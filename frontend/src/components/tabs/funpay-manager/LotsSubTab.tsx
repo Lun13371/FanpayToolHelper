@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { 
   Zap, Loader2, Edit2, Check, X, Sliders, CheckCircle2, Play, ToggleLeft, ToggleRight,
-  Plus, Search, Sparkles, RefreshCw, Trash2
+  Plus, Search, Sparkles, RefreshCw, Trash2, ChevronLeft
 } from 'lucide-react';
 import { useAppContext, API_URL } from '../../../context/AppContext';
 import { handleMouseMove } from '../../../utils/mouseTracker';
@@ -58,6 +58,7 @@ export default function LotsSubTab({
   const [globalCategories, setGlobalCategories] = useState<any[]>([]);
   const [categoriesLoading, setCategoriesLoading] = useState(false);
   const [searchCategoryQuery, setSearchCategoryQuery] = useState('');
+  const [selectedGameName, setSelectedGameName] = useState<string | null>(null);
   const [selectedGlobalCategory, setSelectedGlobalCategory] = useState<any | null>(null);
   
   const [creationFormLoading, setCreationFormLoading] = useState(false);
@@ -160,6 +161,7 @@ export default function LotsSubTab({
       if (res.ok) {
         alert('Лот успешно создан на Funpay!');
         setShowCreateModal(false);
+        setSelectedGameName(null);
         setSelectedGlobalCategory(null);
         setCreationForm(null);
         setSearchCategoryQuery('');
@@ -1142,6 +1144,7 @@ export default function LotsSubTab({
                 <button
                   onClick={() => {
                     setShowCreateModal(false);
+                    setSelectedGameName(null);
                     setSelectedGlobalCategory(null);
                     setCreationForm(null);
                     setSearchCategoryQuery('');
@@ -1155,69 +1158,105 @@ export default function LotsSubTab({
               {/* Тело модалки */}
               <div className="p-4 sm:p-5 flex-1 overflow-y-auto no-scrollbar relative z-10 text-xs">
                 {!selectedGlobalCategory ? (
-                  /* ШАГ 1: ВЫБОР КАТЕГОРИИ */
-                  <div className="space-y-4">
-                    <p className="text-slate-400 font-semibold leading-relaxed">
-                      Введите название игры или подраздела для поиска. Если база пуста — нажмите кнопку синхронизации, чтобы загрузить все доступные категории с Funpay.
-                    </p>
+                  !selectedGameName ? (
+                    /* ШАГ 1: ВЫБОР ИГРЫ */
+                    <div className="space-y-4">
+                      <p className="text-slate-400 font-semibold leading-relaxed">
+                        Введите название игры для поиска. Если база пуста — нажмите кнопку синхронизации, чтобы загрузить все доступные категории с Funpay.
+                      </p>
 
-                    <div className="flex gap-2">
-                      <div className="relative flex-1">
-                        <Search className="absolute left-3.5 top-2.5 w-4 h-4 text-slate-500" />
-                        <input
-                          type="text"
-                          placeholder="Поиск категории (например, Roblox)..."
-                          value={searchCategoryQuery}
-                          onChange={(e) => {
-                            setSearchCategoryQuery(e.target.value);
-                            fetchGlobalCategories(e.target.value);
-                          }}
-                          className="w-full bg-slate-950/40 border border-white/5 rounded-xl py-2 pl-10 pr-4 text-xs text-white focus:outline-none focus:border-brand-cyan/40"
-                        />
-                      </div>
-                      
-                      <button
-                        onClick={handleSyncGlobalCategories}
-                        disabled={syncingCategories}
-                        className="py-2 px-3.5 bg-brand-cyan/10 hover:bg-brand-cyan/15 border border-brand-cyan/20 text-brand-cyan rounded-xl font-bold uppercase tracking-wider flex items-center gap-1 cursor-pointer transition-all shrink-0 text-[10px]"
-                        title="Синхронизировать категории с главной страницы Funpay"
-                      >
-                        {syncingCategories ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <RefreshCw className="w-3.5 h-3.5" />}
-                        <span>Синхронизировать</span>
-                      </button>
-                    </div>
-
-                    {/* Результаты поиска */}
-                    <div className="space-y-1.5 max-h-64 overflow-y-auto pr-1">
-                      {categoriesLoading ? (
-                        <div className="text-center text-slate-500 py-6 animate-pulse">Загрузка категорий...</div>
-                      ) : globalCategories.length === 0 ? (
-                        <div className="text-center text-slate-500 py-6">
-                          Категории не найдены. Введите поисковый запрос или сделайте синхронизацию.
+                      <div className="flex gap-2">
+                        <div className="relative flex-1">
+                          <Search className="absolute left-3.5 top-2.5 w-4 h-4 text-slate-500" />
+                          <input
+                            type="text"
+                            placeholder="Поиск игры (например, Roblox)..."
+                            value={searchCategoryQuery}
+                            onChange={(e) => {
+                              setSearchCategoryQuery(e.target.value);
+                              fetchGlobalCategories(e.target.value);
+                            }}
+                            className="w-full bg-slate-950/40 border border-white/5 rounded-xl py-2 pl-10 pr-4 text-xs text-white focus:outline-none focus:border-brand-cyan/40"
+                          />
                         </div>
-                      ) : (
-                        globalCategories.map((cat: any) => (
-                          <button
-                            key={cat.node_id}
-                            onClick={() => handleSelectGlobalCategory(cat)}
-                            className="w-full text-left p-2.5 bg-slate-950/20 hover:bg-slate-950/40 border border-white/5 hover:border-brand-cyan/15 rounded-xl flex items-center justify-between text-slate-300 hover:text-white transition-all cursor-pointer"
-                          >
-                            <div className="min-w-0">
-                              <span className="font-bold text-[11px] block truncate text-slate-200">
-                                {cat.game_name}
-                              </span>
-                              <span className="text-[10px] text-slate-400">
+                        
+                        <button
+                          onClick={handleSyncGlobalCategories}
+                          disabled={syncingCategories}
+                          className="py-2 px-3.5 bg-brand-cyan/10 hover:bg-brand-cyan/15 border border-brand-cyan/20 text-brand-cyan rounded-xl font-bold uppercase tracking-wider flex items-center gap-1 cursor-pointer transition-all shrink-0 text-[10px]"
+                          title="Синхронизировать категории с главной страницы Funpay"
+                        >
+                          {syncingCategories ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <RefreshCw className="w-3.5 h-3.5" />}
+                          <span>Синхронизировать</span>
+                        </button>
+                      </div>
+
+                      {/* Результаты поиска уникальных игр */}
+                      <div className="space-y-1.5 max-h-64 overflow-y-auto pr-1">
+                        {categoriesLoading ? (
+                          <div className="text-center text-slate-500 py-6 animate-pulse">Загрузка игр...</div>
+                        ) : globalCategories.length === 0 ? (
+                          <div className="text-center text-slate-500 py-6">
+                            Игры не найдены. Введите поисковый запрос или сделайте синхронизацию.
+                          </div>
+                        ) : (
+                          Array.from(new Set(globalCategories.map((cat: any) => cat.game_name))).map((gameName: string) => {
+                            const count = globalCategories.filter((cat: any) => cat.game_name === gameName).length;
+                            return (
+                              <button
+                                key={gameName}
+                                onClick={() => setSelectedGameName(gameName)}
+                                className="w-full text-left p-2.5 bg-slate-950/20 hover:bg-slate-950/40 border border-white/5 hover:border-brand-cyan/15 rounded-xl flex items-center justify-between text-slate-300 hover:text-white transition-all cursor-pointer"
+                              >
+                                <span className="font-bold text-[11px] truncate text-slate-200">
+                                  {gameName}
+                                </span>
+                                <span className="text-[9px] bg-slate-800 text-slate-400 px-2 py-0.5 rounded-full shrink-0 font-bold ml-2">
+                                  {count} подразд.
+                                </span>
+                              </button>
+                            );
+                          })
+                        )}
+                      </div>
+                    </div>
+                  ) : (
+                    /* ШАГ 1.5: ВЫБОР ПОДКАТЕГОРИИ ДЛЯ ВЫБРАННОЙ ИГРЫ */
+                    <div className="space-y-4">
+                      <div className="flex items-center gap-2 pb-2 border-b border-white/5 justify-between">
+                        <button
+                          type="button"
+                          onClick={() => setSelectedGameName(null)}
+                          className="py-1 px-2.5 bg-white/5 hover:bg-white/10 text-brand-cyan rounded-lg font-bold text-[10px] transition-colors cursor-pointer flex items-center gap-1"
+                        >
+                          <ChevronLeft className="w-3.5 h-3.5" />
+                          <span>Назад к играм</span>
+                        </button>
+                        <span className="text-slate-400 font-semibold truncate max-w-[250px]">
+                          Игра: <b className="text-white">{selectedGameName}</b>
+                        </span>
+                      </div>
+
+                      <div className="space-y-1.5 max-h-64 overflow-y-auto pr-1">
+                        {globalCategories
+                          .filter((cat: any) => cat.game_name === selectedGameName)
+                          .map((cat: any) => (
+                            <button
+                              key={cat.node_id}
+                              onClick={() => handleSelectGlobalCategory(cat)}
+                              className="w-full text-left p-2.5 bg-slate-950/20 hover:bg-slate-950/40 border border-white/5 hover:border-brand-cyan/15 rounded-xl flex items-center justify-between text-slate-300 hover:text-white transition-all cursor-pointer"
+                            >
+                              <span className="font-bold text-[11px] truncate text-slate-200">
                                 {cat.subcategory_name}
                               </span>
-                            </div>
-                            <span className="text-[9px] bg-slate-800 text-slate-400 px-2 py-0.5 rounded-full uppercase shrink-0 font-mono font-bold ml-2">
-                              node_id: {cat.node_id}
-                            </span>
-                          </button>
-                        ))
-                      )}
+                              <span className="text-[9px] bg-slate-800 text-slate-400 px-2 py-0.5 rounded-full uppercase shrink-0 font-mono font-bold ml-2">
+                                node_id: {cat.node_id}
+                              </span>
+                            </button>
+                          ))}
+                      </div>
                     </div>
-                  </div>
+                  )
                 ) : (
                   /* ШАГ 2: ЗАПОЛНЕНИЕ ФОРМЫ */
                   <div className="space-y-4">
