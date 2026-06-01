@@ -1,12 +1,13 @@
 import { useState, useEffect } from 'react';
+import { createPortal } from 'react-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import { 
   Zap, Loader2, Edit2, Check, X, Sliders, CheckCircle2, Play, ToggleLeft, ToggleRight,
-  Plus, Search, Sparkles, RefreshCw, Trash2, ChevronLeft
+  Plus, Search, Sparkles, RefreshCw, Trash2, ChevronLeft, Folder
 } from 'lucide-react';
 import { useAppContext, API_URL } from '../../../context/AppContext';
 import { handleMouseMove } from '../../../utils/mouseTracker';
-import { LotSettings, LotTemplate } from '../../../types';
+import { LotSettings, LotTemplate, LotCreationTemplate } from '../../../types';
 
 interface FunpayLot {
   lot_id: string;
@@ -51,10 +52,12 @@ export default function LotsSubTab({
   const [selectedCategory, setSelectedCategory] = useState<string>('all');
   const [localRules, setLocalRules] = useState<LotSettings[]>([]);
   const [templates, setTemplates] = useState<LotTemplate[]>([]);
+  const [creationTemplates, setCreationTemplates] = useState<LotCreationTemplate[]>([]);
   const [deliveryItems, setDeliveryItems] = useState<any[]>([]);
 
   // Состояния для добавления нового лота
   const [showCreateModal, setShowCreateModal] = useState(false);
+  const [modalMode, setModalMode] = useState<'scratch' | 'template'>('scratch');
   const [globalCategories, setGlobalCategories] = useState<any[]>([]);
   const [categoriesLoading, setCategoriesLoading] = useState(false);
   const [searchCategoryQuery, setSearchCategoryQuery] = useState('');
@@ -177,6 +180,43 @@ export default function LotsSubTab({
     }
   };
 
+  const handleApplyCreationTemplate = async (tpl: LotCreationTemplate) => {
+    setSelectedGlobalCategory({
+      node_id: tpl.node_id,
+      game_name: tpl.game_name,
+      subcategory_name: tpl.subcategory_name
+    });
+    
+    setCreationFormLoading(true);
+    setCreationForm(null);
+    try {
+      const res = await fetch(`${API_URL}/api/v1/accounts/${selectedAccountId}/lots/creation-form?node_id=${tpl.node_id}`, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setCreationForm(data);
+        
+        const mergedVals: Record<string, any> = {};
+        if (data.form_fields) {
+          data.form_fields.forEach((f: any) => {
+            mergedVals[f.name] = tpl.fields[f.name] !== undefined ? tpl.fields[f.name] : f.value;
+          });
+        }
+        setCreationFieldsValues(mergedVals);
+      } else {
+        const err = await res.json();
+        alert(err.detail || 'Не удалось получить форму создания лота');
+        setSelectedGlobalCategory(null);
+      }
+    } catch {
+      alert('Ошибка соединения');
+      setSelectedGlobalCategory(null);
+    } finally {
+      setCreationFormLoading(false);
+    }
+  };
+
   // Редактирование цены в ячейке таблицы
   const [editingLotId, setEditingLotId] = useState<string | null>(null);
   const [editPrice, setEditPrice] = useState<string>('');
@@ -227,8 +267,23 @@ export default function LotsSubTab({
     if (selectedAccountId && token) {
       loadLotsData();
       fetchTemplates();
+      fetchCreationTemplates();
     }
   }, [selectedAccountId, token]);
+
+  const fetchCreationTemplates = async () => {
+    try {
+      const res = await fetch(`${API_URL}/api/v1/lots/templates/creation`, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setCreationTemplates(data);
+      }
+    } catch (err) {
+      console.error(err);
+    }
+  };
 
   const loadLotsData = async () => {
     setLotsLoading(true);
@@ -773,10 +828,17 @@ export default function LotsSubTab({
       </motion.div>
 
       {/* МОДАЛКА НАСТРОЕК ЛОТА (ДЕПИНГ + ШАБЛОНЫ + ВСТРОЕННАЯ АВТОВЫДАЧА) */}
-      <AnimatePresence>
-        {showConfigModal && selectedLot && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
+      {createPortal(
+        <AnimatePresence>
+          {showConfigModal && selectedLot && (
             <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              transition={{ duration: 0.2 }}
+              className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm"
+            >
+              <motion.div
               initial={{ opacity: 0, scale: 0.95, y: 15 }}
               animate={{ opacity: 1, scale: 1, y: 0 }}
               exit={{ opacity: 0, scale: 0.95, y: 15 }}
@@ -1115,19 +1177,28 @@ export default function LotsSubTab({
                 </div>
               </div>
             </motion.div>
-          </div>
+          </motion.div>
         )}
-      </AnimatePresence>
+      </AnimatePresence>,
+      document.body
+    )}
 
       {/* МОДАЛКА СОЗДАНИЯ НОВОГО ЛОТА */}
-      <AnimatePresence>
-        {showCreateModal && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-md overflow-hidden">
+      {createPortal(
+        <AnimatePresence>
+          {showCreateModal && (
             <motion.div
-              initial={{ opacity: 0, scale: 0.95, y: 10 }}
-              animate={{ opacity: 1, scale: 1, y: 0 }}
-              exit={{ opacity: 0, scale: 0.95, y: 10 }}
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
               transition={{ duration: 0.2 }}
+              className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-md overflow-hidden"
+            >
+              <motion.div
+                initial={{ opacity: 0, scale: 0.95, y: 10 }}
+                animate={{ opacity: 1, scale: 1, y: 0 }}
+                exit={{ opacity: 0, scale: 0.95, y: 10 }}
+                transition={{ duration: 0.2 }}
               className="bg-slate-900 border border-white/5 rounded-3xl w-full max-w-lg max-h-[85vh] flex flex-col shadow-2xl overflow-hidden relative"
               onMouseMove={handleMouseMove}
             >
@@ -1157,8 +1228,87 @@ export default function LotsSubTab({
 
               {/* Тело модалки */}
               <div className="p-4 sm:p-5 flex-1 overflow-y-auto no-scrollbar relative z-10 text-xs">
+                {!selectedGlobalCategory && (
+                  <div className="flex gap-1.5 p-1 bg-slate-950/40 border border-white/5 rounded-2xl w-full mb-4">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setModalMode('scratch');
+                        setSelectedGameName(null);
+                      }}
+                      className={`flex-1 py-1.5 rounded-xl text-[10px] font-bold uppercase tracking-wider transition-all cursor-pointer text-center border ${
+                        modalMode === 'scratch'
+                          ? 'bg-brand-cyan/15 text-brand-cyan border-brand-cyan/20'
+                          : 'text-slate-400 hover:text-white border-transparent'
+                      }`}
+                    >
+                      Обычное создание
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setModalMode('template')}
+                      className={`flex-1 py-1.5 rounded-xl text-[10px] font-bold uppercase tracking-wider transition-all cursor-pointer text-center border ${
+                        modalMode === 'template'
+                          ? 'bg-brand-cyan/15 text-brand-cyan border-brand-cyan/20'
+                          : 'text-slate-400 hover:text-white border-transparent'
+                      }`}
+                    >
+                      Выбрать из шаблонов ({creationTemplates.length})
+                    </button>
+                  </div>
+                )}
+
                 {!selectedGlobalCategory ? (
-                  !selectedGameName ? (
+                  modalMode === 'template' ? (
+                    /* ШАБЛОНЫ ПУБЛИКАЦИИ */
+                    <div className="space-y-4 max-h-96 overflow-y-auto pr-1 no-scrollbar">
+                      {creationTemplates.length === 0 ? (
+                        <div className="text-center py-12 text-slate-500">
+                          У вас пока нет сохраненных шаблонов публикаций.<br />
+                          Создать их можно во вкладке <b className="text-brand-cyan">«Шаблоны лотов»</b>.
+                        </div>
+                      ) : (
+                        (() => {
+                          const grouped = creationTemplates.reduce((acc, tpl) => {
+                            const game = tpl.game_name || 'Разное';
+                            if (!acc[game]) acc[game] = [];
+                            acc[game].push(tpl);
+                            return acc;
+                          }, {} as Record<string, LotCreationTemplate[]>);
+
+                          return Object.keys(grouped).map((gameName) => {
+                            const tpls = grouped[gameName];
+                            return (
+                              <div key={gameName} className="rounded-2xl border border-white/5 bg-slate-950/20 overflow-hidden mb-3 last:mb-0">
+                                <div className="bg-slate-950/40 px-3.5 py-2 border-b border-white/5 flex items-center gap-1.5 font-bold uppercase tracking-wider text-[10px] text-slate-400">
+                                  <Folder className="w-3.5 h-3.5 text-brand-cyan shrink-0" />
+                                  <span>{gameName}</span>
+                                </div>
+                                <div className="divide-y divide-white/5 p-1.5">
+                                  {tpls.map((tpl) => (
+                                    <button
+                                      key={tpl.id}
+                                      type="button"
+                                      onClick={() => handleApplyCreationTemplate(tpl)}
+                                      className="w-full text-left p-2.5 rounded-xl hover:bg-white/[0.02] flex items-center justify-between transition-all group cursor-pointer"
+                                    >
+                                      <div className="space-y-0.5">
+                                        <span className="font-bold text-slate-200 group-hover:text-brand-cyan transition-colors text-[11px] block">{tpl.name}</span>
+                                        <span className="text-[9px] text-slate-400 font-semibold">{tpl.subcategory_name}</span>
+                                      </div>
+                                      <span className="text-[9px] bg-brand-cyan/15 text-brand-cyan border border-brand-cyan/20 px-2.5 py-0.5 rounded-full font-bold uppercase tracking-wider group-hover:bg-brand-cyan group-hover:text-slate-950 transition-all shrink-0">
+                                        Выбрать
+                                      </span>
+                                    </button>
+                                  ))}
+                                </div>
+                              </div>
+                            );
+                          });
+                        })()
+                      )}
+                    </div>
+                  ) : !selectedGameName ? (
                     /* ШАГ 1: ВЫБОР ИГРЫ */
                     <div className="space-y-4">
                       <p className="text-slate-400 font-semibold leading-relaxed">
@@ -1362,9 +1512,11 @@ export default function LotsSubTab({
                 )}
               </div>
             </motion.div>
-          </div>
+          </motion.div>
         )}
-      </AnimatePresence>
+      </AnimatePresence>,
+      document.body
+    )}
     </>
   );
 }

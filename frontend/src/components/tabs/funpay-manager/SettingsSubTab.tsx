@@ -4,6 +4,45 @@ import { Settings, Loader2, Check } from 'lucide-react';
 import { useAppContext, API_URL } from '../../../context/AppContext';
 import { handleMouseMove } from '../../../utils/mouseTracker';
 
+interface ToggleProps {
+  checked: boolean;
+  onChange: (checked: boolean) => void;
+  label: string;
+  description: string;
+}
+
+function Toggle({ checked, onChange, label, description }: ToggleProps) {
+  return (
+    <div 
+      onClick={() => onChange(!checked)}
+      className="flex items-center justify-between p-3.5 rounded-2xl bg-white/[0.01] border border-white/5 hover:border-brand-cyan/20 hover:bg-slate-950/20 cursor-pointer select-none transition-all duration-300 group"
+    >
+      <div className="flex flex-col pr-4">
+        <span className="text-xs font-bold text-slate-100 block group-hover:text-brand-cyan transition-colors duration-300">{label}</span>
+        <span className="text-[10px] text-slate-400 block mt-0.5 leading-normal">{description}</span>
+      </div>
+      <button
+        type="button"
+        className={`relative w-10 h-5.5 rounded-full transition-all duration-300 flex items-center p-0.5 border outline-none focus:outline-none shrink-0 ${
+          checked 
+            ? 'bg-brand-cyan/15 border-brand-cyan/30 shadow-[0_0_12px_rgba(6,182,212,0.1)]' 
+            : 'bg-slate-950/80 border-white/10'
+        }`}
+      >
+        <motion.div
+          animate={{ x: checked ? 18 : 0 }}
+          transition={{ type: 'spring', stiffness: 550, damping: 28 }}
+          className={`w-4 h-4 rounded-full transition-all duration-300 ${
+            checked 
+              ? 'bg-brand-cyan shadow-[0_0_8px_rgba(6,182,212,0.6)]' 
+              : 'bg-slate-600'
+          }`}
+        />
+      </button>
+    </div>
+  );
+}
+
 export default function SettingsSubTab() {
   const { token, selectedAccountId, accounts, fetchAccounts } = useAppContext();
   const currentAccount = accounts.find(a => a.id === selectedAccountId);
@@ -13,7 +52,13 @@ export default function SettingsSubTab() {
     system_prompt: '',
     fallback_template: '',
     proxy_url: '',
-    telegram_chat_id: ''
+    telegram_chat_id: '',
+    always_online: true,
+    auto_raise_active: true,
+    auto_delivery_active: true,
+    ai_reply_active: true,
+    operator_snooze_minutes: 20,
+    review_followup_active: true
   });
   const [savingSettings, setSavingSettings] = useState(false);
 
@@ -25,7 +70,13 @@ export default function SettingsSubTab() {
         system_prompt: currentAccount.system_prompt || '',
         fallback_template: currentAccount.fallback_template || '',
         proxy_url: currentAccount.proxy_url || '',
-        telegram_chat_id: currentAccount.telegram_chat_id || ''
+        telegram_chat_id: currentAccount.telegram_chat_id || '',
+        always_online: currentAccount.always_online !== undefined ? currentAccount.always_online : true,
+        auto_raise_active: currentAccount.auto_raise_active !== undefined ? currentAccount.auto_raise_active : true,
+        auto_delivery_active: currentAccount.auto_delivery_active !== undefined ? currentAccount.auto_delivery_active : true,
+        ai_reply_active: currentAccount.ai_reply_active !== undefined ? currentAccount.ai_reply_active : true,
+        operator_snooze_minutes: currentAccount.operator_snooze_minutes !== undefined ? currentAccount.operator_snooze_minutes : 20,
+        review_followup_active: currentAccount.review_followup_active !== undefined ? currentAccount.review_followup_active : true
       });
     }
   }, [currentAccount]);
@@ -47,7 +98,13 @@ export default function SettingsSubTab() {
           system_prompt: settingsForm.system_prompt,
           fallback_template: settingsForm.fallback_template,
           proxy_url: settingsForm.proxy_url,
-          telegram_chat_id: settingsForm.telegram_chat_id
+          telegram_chat_id: settingsForm.telegram_chat_id,
+          always_online: settingsForm.always_online,
+          auto_raise_active: settingsForm.auto_raise_active,
+          auto_delivery_active: settingsForm.auto_delivery_active,
+          ai_reply_active: settingsForm.ai_reply_active,
+          operator_snooze_minutes: Number(settingsForm.operator_snooze_minutes),
+          review_followup_active: settingsForm.review_followup_active
         })
       });
       if (res.ok) {
@@ -142,6 +199,31 @@ export default function SettingsSubTab() {
               />
             </div>
 
+            <div className="space-y-3 pt-3 border-t border-white/5">
+              <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block mb-1">Фоновые автоматические задачи</span>
+              
+              <Toggle
+                checked={settingsForm.always_online}
+                onChange={(checked) => setSettingsForm({ ...settingsForm, always_online: checked })}
+                label="Вечный онлайн (Always Online)"
+                description="Держать профиль постоянно в сети на FunPay"
+              />
+
+              <Toggle
+                checked={settingsForm.auto_raise_active}
+                onChange={(checked) => setSettingsForm({ ...settingsForm, auto_raise_active: checked })}
+                label="Автоподнятие лотов"
+                description="Периодический подъем лотов по расписанию"
+              />
+
+              <Toggle
+                checked={settingsForm.auto_delivery_active}
+                onChange={(checked) => setSettingsForm({ ...settingsForm, auto_delivery_active: checked })}
+                label="Автовыдача товаров"
+                description="Автоматическая отправка товаров покупателям"
+              />
+            </div>
+
             {/* Статус бота */}
             <div className="flex items-center justify-between p-4 rounded-2xl bg-white/[0.02] border border-white/5 mt-4">
               <div>
@@ -190,6 +272,39 @@ export default function SettingsSubTab() {
                 placeholder="Если ИИ временно отключен..."
                 required
               />
+            </div>
+
+            <div className="space-y-3 pt-3 border-t border-white/5">
+              <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block mb-1">Дополнительные параметры</span>
+
+              <Toggle
+                checked={settingsForm.ai_reply_active}
+                onChange={(checked) => setSettingsForm({ ...settingsForm, ai_reply_active: checked })}
+                label="Ответы ИИ (AI Reply)"
+                description="Включить автоматические ИИ-ответы на сообщения"
+              />
+
+              <Toggle
+                checked={settingsForm.review_followup_active}
+                onChange={(checked) => setSettingsForm({ ...settingsForm, review_followup_active: checked })}
+                label="Напоминание об отзыве"
+                description="Рассылка напоминаний через 1 час после выдачи"
+              />
+
+              {/* Snooze Minutes */}
+              <div>
+                <label className="text-[10px] font-bold text-slate-500 uppercase mb-1.5 block">Засыпание ИИ после ручного ответа оператора (минут)</label>
+                <input
+                  type="number"
+                  min="0"
+                  max="1440"
+                  value={settingsForm.operator_snooze_minutes}
+                  onChange={(e) => setSettingsForm({ ...settingsForm, operator_snooze_minutes: parseInt(e.target.value) || 0 })}
+                  className="w-full bg-slate-950/40 border border-white/5 rounded-xl py-2.5 px-4 text-xs text-white focus:outline-none focus:border-brand-cyan/40"
+                  placeholder="Обычно 20 минут"
+                  required
+                />
+              </div>
             </div>
           </div>
         </div>

@@ -1656,7 +1656,8 @@ class FanpayClient:
                         res_json = res.json()
                         if res_json.get("success") or not res_json.get("error"):
                             return True, "Лот успешно создан на Funpay!"
-                        return False, res_json.get("message") or "Ошибка сохранения лота"
+                        error_msg = res_json.get("desc") or res_json.get("message") or "Ошибка сохранения лота"
+                        return False, error_msg
                     except Exception:
                         if "success" in res.text or '"error":false' in res.text or not res.text:
                             return True, "Лот успешно создан на Funpay!"
@@ -1723,14 +1724,14 @@ class FanpayClient:
 
     async def delete_lot(self, lot_id: str) -> bool:
         """
-        Удаляет лот на FunPay, используя форму редактирования лота и передавая поле deleted=1.
+        Удаляет лот на FunPay, используя упрощенный и сверхнадежный метод из Cardinal.
         """
-        # Сбрасываем куки до чистого golden_key для предотвращения конфликтов устаревшей сессии (PHPSESSID/CSRF)
+        # Сбрасываем куки до чистого golden_key для предотвращения конфликтов сессий
         self.cookies = {"golden_key": self.golden_key}
         
         async with self._get_client() as client:
             try:
-                # 1. Загружаем страницу редактирования лота
+                # 1. Загружаем страницу редактирования лота для получения актуального CSRF
                 edit_url = f"https://funpay.com/lots/offerEdit?offer={lot_id}"
                 response = await client.get(edit_url)
                 if response.status_code != 200:
@@ -1738,6 +1739,7 @@ class FanpayClient:
                     response = await client.get(edit_url)
                 
                 if response.status_code != 200:
+                    logger.error(f"Не удалось открыть страницу лота {lot_id} для удаления.")
                     return False
 
                 csrf_token = self._extract_csrf_token(response.text)
@@ -1745,49 +1747,25 @@ class FanpayClient:
                     logger.error("Не удалось извлечь CSRF токен для удаления лота.")
                     return False
 
-                soup = BeautifulSoup(response.text, "html.parser")
-                form = soup.find("form", class_="form-offer-editor") or soup.find("form", action=re.compile(r"/lots/(save|offerSave)", re.I)) or soup.find("form")
-                if not form:
-                    logger.error("Форма сохранения не найдена.")
-                    return False
+                # 2. Формируем минимальный payload для удаления, как в Cardinal
+                # FunPay не требует валидации остальных полей формы при наличии флага deleted
+                payload = {
+                    "csrf_token": csrf_token,
+                    "offer_id": lot_id,
+                    "deleted": "1"
+                }
 
-                # Определяем URL отправки формы
-                action_path = form.get("action", "/lots/offerSave")
-                if not action_path.startswith("http"):
-                    save_url = f"https://funpay.com{action_path}"
-                else:
-                    save_url = action_path
-
-                # Парсим свежие базовые поля формы
-                payload = {}
-                for inp in form.find_all(["input", "select", "textarea"]):
-                    name = inp.get("name")
-                    if not name:
-                        continue
-                    
-                    if inp.name == "input" and inp.get("type") == "checkbox":
-                        if inp.has_attr("checked"):
-                            payload[name] = inp.get("value", "1")
-                        continue
-                        
-                    val = inp.get("value", "")
-                    if inp.name == "textarea":
-                        val = inp.text
-                    payload[name] = val
-
-                # Заполняем поле deleted=1
-                payload["csrf_token"] = csrf_token
-                payload["deleted"] = "1"
-
-                # Отправляем POST-запрос на сохранение (удаление) лота
+                # 3. Отправляем POST-запрос на lots/offerSave
+                save_url = "https://funpay.com/lots/offerSave"
                 headers = {
-                    "Content-Type": "application/x-www-form-urlencoded",
+                    "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
                     "X-Requested-With": "XMLHttpRequest"
                 }
 
-                logger.info(f"Отправка запроса удаления лота {lot_id} на {save_url}")
+                logger.info(f"Отправка минимального запроса удаления лота {lot_id} на {save_url}")
                 save_res = await client.post(save_url, data=payload, headers=headers)
-                logger.info(f"Ответ FunPay при удалении: {save_res.status_code} | {save_res.text[:300]}")
+                logger.info(f"Ответ FunPay при удалении: {save_res.status_code} | {save_res.text[:200]}")
+                
                 if save_res.status_code == 200:
                     try:
                         res_json = save_res.json()

@@ -37,6 +37,12 @@ class AccountUpdate(BaseModel):
     global_damping_active: Optional[bool] = None
     global_undercut_value: Optional[float] = None
     global_min_price: Optional[float] = None
+    always_online: Optional[bool] = None
+    auto_raise_active: Optional[bool] = None
+    auto_delivery_active: Optional[bool] = None
+    ai_reply_active: Optional[bool] = None
+    operator_snooze_minutes: Optional[int] = None
+    review_followup_active: Optional[bool] = None
 
 class AccountResponse(BaseModel):
     id: int
@@ -48,6 +54,14 @@ class AccountResponse(BaseModel):
     system_prompt: str
     fallback_template: str
     created_at: datetime
+    
+    # Новые сессионные и ИИ настройки
+    always_online: bool = True
+    auto_raise_active: bool = True
+    auto_delivery_active: bool = True
+    ai_reply_active: bool = True
+    operator_snooze_minutes: int = 20
+    review_followup_active: bool = True
     
     # Глобальные настройки демпинга
     global_damping_active: bool = False

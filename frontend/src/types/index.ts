@@ -15,6 +15,15 @@ export interface FanpayAccount {
   golden_key?: string;
   system_prompt: string;
   fallback_template: string;
+  
+  // Новые настройки сессии и ИИ
+  always_online: boolean;
+  auto_raise_active: boolean;
+  auto_delivery_active: boolean;
+  ai_reply_active: boolean;
+  operator_snooze_minutes: number;
+  review_followup_active: boolean;
+
   funpay_user_id?: string;
   balance?: number;
   rating?: number;
@@ -37,6 +46,17 @@ export interface LotTemplate {
   min_price: number;
   undercut_value: number;
   is_active: boolean;
+  created_at: string;
+}
+
+export interface LotCreationTemplate {
+  id: number;
+  user_id: number;
+  name: string;
+  node_id: string;
+  game_name: string;
+  subcategory_name: string;
+  fields: Record<string, any>;
   created_at: string;
 }
 

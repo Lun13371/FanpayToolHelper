@@ -86,6 +86,9 @@ class SchedulerManager:
             if not account or not account.is_active:
                 return
 
+            if not account.always_online:
+                return
+
             client = FanpayClient(
                 golden_key=account.golden_key,
                 proxy_url=account.proxy_url,
@@ -110,6 +113,11 @@ class SchedulerManager:
         async with async_session_maker() as db:
             account = await db.get(FanpayAccount, account_id)
             if not account or not account.is_active:
+                return
+
+            if not account.auto_raise_active:
+                await self.add_log(db, account_id, "Автоподнятие лотов пропущено (отключено в настройках).")
+                await self.schedule_next_raise(account_id, initial=False)
                 return
 
             client = FanpayClient(account.golden_key, account.proxy_url, account.user_agent, account.cookies)
@@ -150,6 +158,10 @@ class SchedulerManager:
                     continue
 
                 await self.add_log(db, account_id, f"Обнаружен новый оплаченный заказ {order_id} ({lot_name}) от {buyer_name}.")
+
+                if not account.auto_delivery_active:
+                    await self.add_log(db, account_id, f"Автовыдача отключена в настройках. Пропуск выдачи для заказа {order_id}.")
+                    continue
 
                 # 2. Ищем подходящий товар на выдачу в БД (по имени лота)
                 # Поддерживаем и ID категории, но по имени лота — самое гибкое по выбору пользователя
@@ -228,6 +240,9 @@ class SchedulerManager:
             # =========================================================================
             # ИИ-АВТООТВЕТЧИК
             # =========================================================================
+            if not account.ai_reply_active:
+                return
+
             # Проверяем новые сообщения в чатах
             # Для этого сканируем последние чаты заказа
             for order in paid_orders:
@@ -240,11 +255,12 @@ class SchedulerManager:
                 
                 # Если последнее сообщение от покупателя — нам нужно ответить!
                 if last_sender == "buyer":
-                    # Проверяем, не отвечал ли оператор сам за последние 20 минут (засыпание ИИ)
+                    # Проверяем, не отвечал ли оператор сам за последние N минут (засыпание ИИ)
                     if account.last_operator_activity:
                         elapsed = datetime.utcnow() - account.last_operator_activity
-                        if elapsed < timedelta(minutes=20):
-                            logger.info(f"Чат {node_id}: ИИ заснул, так как оператор активен. Прошло {elapsed.seconds // 60} мин.")
+                        snooze_limit = timedelta(minutes=account.operator_snooze_minutes)
+                        if elapsed < snooze_limit:
+                            logger.info(f"Чат {node_id}: ИИ заснул, так как оператор активен. Прошло {elapsed.seconds // 60} мин. (Лимит {account.operator_snooze_minutes} мин.)")
                             continue
 
                     # Запускаем генерацию ИИ
@@ -398,6 +414,9 @@ class SchedulerManager:
         async with async_session_maker() as db:
             account = await db.get(FanpayAccount, account_id)
             if not account or not account.is_active:
+                return
+
+            if not account.review_followup_active:
                 return
 
             client = FanpayClient(account.golden_key, account.proxy_url, account.user_agent, account.cookies)

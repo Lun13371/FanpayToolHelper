@@ -20,6 +20,13 @@ class FanpayAccount(SQLModel, table=True):
     telegram_chat_id: Optional[str] = Field(default=None)
     user_agent: Optional[str] = Field(default=None)
     
+    always_online: bool = Field(default=True)
+    auto_raise_active: bool = Field(default=True)
+    auto_delivery_active: bool = Field(default=True)
+    ai_reply_active: bool = Field(default=True)
+    operator_snooze_minutes: int = Field(default=20)
+    review_followup_active: bool = Field(default=True)
+    
     # Сессионные куки сохраняются в формате JSON
     cookies: Optional[Dict[str, Any]] = Field(default=None, sa_column=Column(JSON))
     

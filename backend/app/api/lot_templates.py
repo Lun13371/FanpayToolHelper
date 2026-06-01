@@ -1,4 +1,4 @@
-from typing import Any, List, Optional
+from typing import Any, List, Optional, Dict
 from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
@@ -8,8 +8,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.database import get_session
 from app.api.deps import get_current_user
 from app.models.user import User, UserRole
+from app.models.account import FanpayAccount
 from app.models.lot import LotSettings
-from app.models.lot_template import LotTemplate
+from app.models.lot_template import LotTemplate, LotCreationTemplate
 from app.api.accounts import verify_account_access
 
 router = APIRouter(prefix="/lots/templates", tags=["Шаблоны Демпинга"])
@@ -42,6 +43,32 @@ class TemplateApply(BaseModel):
     account_id: int
     lot_id: str
     lot_name: str
+
+
+# Схемы для шаблонов публикации новых лотов
+class LotCreationTemplateCreate(BaseModel):
+    name: str = Field(..., description="Название шаблона")
+    node_id: str = Field(..., description="ID категории на Funpay")
+    game_name: str = Field(..., description="Название игры")
+    subcategory_name: str = Field(..., description="Название подкатегории")
+    fields: Dict[str, Any] = Field(default_factory=dict, description="Значения полей формы")
+
+class LotCreationTemplateUpdate(BaseModel):
+    name: Optional[str] = None
+    fields: Optional[Dict[str, Any]] = None
+
+class LotCreationTemplateResponse(BaseModel):
+    id: int
+    user_id: int
+    name: str
+    node_id: str
+    game_name: str
+    subcategory_name: str
+    fields: Dict[str, Any]
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
 
 
 def get_owner_id(user: User) -> int:
@@ -178,3 +205,119 @@ async def apply_template_to_lot(
     await db.refresh(lot_settings)
     
     return {"success": True, "message": f"Шаблон '{template.name}' успешно применен к лоту '{data.lot_name}'!", "lot_settings_id": lot_settings.id}
+
+
+# =========================================================================
+# УПРАВЛЕНИЕ ШАБЛОНАМИ ПУБЛИКАЦИИ ЛОТОВ (LOT CREATION TEMPLATES)
+# =========================================================================
+
+@router.get("/creation", response_model=List[LotCreationTemplateResponse])
+async def list_creation_templates(
+    db: AsyncSession = Depends(get_session),
+    current_user: User = Depends(get_current_user)
+) -> Any:
+    """Получить список всех глобальных шаблонов публикации лотов."""
+    owner_id = get_owner_id(current_user)
+    query = select(LotCreationTemplate).where(LotCreationTemplate.user_id == owner_id)
+    res = await db.execute(query)
+    return res.scalars().all()
+
+
+@router.post("/creation", response_model=LotCreationTemplateResponse, status_code=status.HTTP_201_CREATED)
+async def create_creation_template(
+    data: LotCreationTemplateCreate,
+    db: AsyncSession = Depends(get_session),
+    current_user: User = Depends(get_current_user)
+) -> Any:
+    """Создать новый шаблон публикации лота (только для Владельцев/Админа)."""
+    if current_user.role == UserRole.MANAGER:
+        raise HTTPException(status_code=403, detail="Менеджеры не могут создавать глобальные шаблоны")
+        
+    new_template = LotCreationTemplate(
+        user_id=current_user.id,
+        name=data.name,
+        node_id=data.node_id,
+        game_name=data.game_name,
+        subcategory_name=data.subcategory_name,
+        fields=data.fields
+    )
+    db.add(new_template)
+    await db.commit()
+    await db.refresh(new_template)
+    return new_template
+
+
+@router.put("/creation/{template_id}", response_model=LotCreationTemplateResponse)
+async def update_creation_template(
+    template_id: int,
+    data: LotCreationTemplateUpdate,
+    db: AsyncSession = Depends(get_session),
+    current_user: User = Depends(get_current_user)
+) -> Any:
+    """Редактировать параметры шаблона публикации лота (только для Владельцев/Админа)."""
+    if current_user.role == UserRole.MANAGER:
+        raise HTTPException(status_code=403, detail="Менеджеры не могут редактировать шаблоны")
+
+    template = await db.get(LotCreationTemplate, template_id)
+    if not template or template.user_id != current_user.id:
+        raise HTTPException(status_code=404, detail="Шаблон не найден")
+
+    update_data = data.dict(exclude_unset=True)
+    for key, value in update_data.items():
+        setattr(template, key, value)
+
+    db.add(template)
+    await db.commit()
+    await db.refresh(template)
+    return template
+
+
+@router.delete("/creation/{template_id}", status_code=status.HTTP_204_NO_CONTENT, response_model=None)
+async def delete_creation_template(
+    template_id: int,
+    db: AsyncSession = Depends(get_session),
+    current_user: User = Depends(get_current_user)
+) -> Any:
+    """Удалить шаблон публикации лота (только для Владельцев/Админа)."""
+    if current_user.role == UserRole.MANAGER:
+        raise HTTPException(status_code=403, detail="Менеджеры не могут удалять шаблоны")
+
+    template = await db.get(LotCreationTemplate, template_id)
+    if not template or template.user_id != current_user.id:
+        raise HTTPException(status_code=404, detail="Шаблон не найден")
+
+    await db.delete(template)
+    await db.commit()
+    return None
+
+
+@router.get("/creation/form-fields")
+async def get_creation_template_form_fields(
+    node_id: str,
+    db: AsyncSession = Depends(get_session),
+    current_user: User = Depends(get_current_user)
+) -> Any:
+    """Получить динамическую форму создания лота для настройки шаблона."""
+    from app.services.fanpay_client import FanpayClient
+    owner_id = get_owner_id(current_user)
+    
+    # Ищем любой верифицированный аккаунт владельца для парсинга полей с Funpay
+    query = select(FanpayAccount).where(
+        FanpayAccount.user_id == owner_id,
+        FanpayAccount.cookies != None
+    )
+    res = await db.execute(query)
+    account = res.scalars().first()
+    
+    if not account:
+        raise HTTPException(
+            status_code=400, 
+            detail="Необходимо иметь хотя бы один верифицированный аккаунт в менеджере для загрузки структуры полей с Funpay."
+        )
+        
+    client = FanpayClient(account.golden_key, account.proxy_url, account.user_agent, account.cookies)
+    details = await client.get_creation_form_details(node_id)
+    if not details:
+        raise HTTPException(status_code=400, detail="Не удалось загрузить структуру полей с Funpay.")
+    return details
+

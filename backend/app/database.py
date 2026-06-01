@@ -35,7 +35,7 @@ async def init_db() -> None:
         from app.models.account import FanpayAccount
         from app.models.permission import ManagerPermission
         from app.models.lot import LotSettings
-        from app.models.lot_template import LotTemplate
+        from app.models.lot_template import LotTemplate, LotCreationTemplate
         from app.models.delivery import AutoDeliveryItem
         from app.models.review import AutoReviewTemplate
         from app.models.competitor import CompetitorBlacklist
@@ -129,5 +129,47 @@ async def init_db() -> None:
     try:
         async with engine.begin() as conn:
             await conn.execute(text("ALTER TABLE fanpay_accounts ADD COLUMN global_min_price FLOAT DEFAULT 0.0"))
+    except Exception:
+        pass
+
+    # 13. always_online
+    try:
+        async with engine.begin() as conn:
+            await conn.execute(text("ALTER TABLE fanpay_accounts ADD COLUMN always_online BOOLEAN DEFAULT TRUE"))
+    except Exception:
+        pass
+
+    # 14. auto_raise_active
+    try:
+        async with engine.begin() as conn:
+            await conn.execute(text("ALTER TABLE fanpay_accounts ADD COLUMN auto_raise_active BOOLEAN DEFAULT TRUE"))
+    except Exception:
+        pass
+
+    # 15. auto_delivery_active
+    try:
+        async with engine.begin() as conn:
+            await conn.execute(text("ALTER TABLE fanpay_accounts ADD COLUMN auto_delivery_active BOOLEAN DEFAULT TRUE"))
+    except Exception:
+        pass
+
+    # 16. ai_reply_active
+    try:
+        async with engine.begin() as conn:
+            await conn.execute(text("ALTER TABLE fanpay_accounts ADD COLUMN ai_reply_active BOOLEAN DEFAULT TRUE"))
+    except Exception:
+        pass
+
+    # 17. operator_snooze_minutes
+    try:
+        async with engine.begin() as conn:
+            await conn.execute(text("ALTER TABLE fanpay_accounts ADD COLUMN operator_snooze_minutes INTEGER DEFAULT 20"))
+    except Exception:
+        pass
+
+    # 18. review_followup_active
+    try:
+        async with engine.begin() as conn:
+            await conn.execute(text("ALTER TABLE fanpay_accounts ADD COLUMN review_followup_active BOOLEAN DEFAULT TRUE"))
     except Exception:
         pass
