@@ -83,8 +83,9 @@ class AgentOrchestrator:
         """
         candidate_models = [
             "accounts/fireworks/models/kimi-k2p5",
-            "accounts/fireworks/models/llama-3-3-70b-instruct",
-            "accounts/fireworks/models/qwen2p5-coder-32b-instruct"
+            "accounts/fireworks/models/llama-v3p3-70b-instruct",
+            "accounts/fireworks/models/llama-v3p1-70b-instruct",
+            "accounts/fireworks/models/qwen2p5-72b-instruct"
         ]
         
         messages = [

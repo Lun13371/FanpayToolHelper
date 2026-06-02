@@ -596,58 +596,91 @@ def parse_lot_creation_form_details(html: str) -> Dict[str, Any]:
 
 def parse_all_categories_list(html: str) -> List[Dict[str, Any]]:
     """
-    Парсит главную страницу Funpay и возвращает список всех игр и подкатегорий.
+    Парсит главную страницу Funpay и возвращает список всех игр и оригинальных подкатегорий.
     """
     soup = BeautifulSoup(html, "html.parser")
-    promo_game_sections = soup.find_all(class_=re.compile(r"promo-game|game-title", re.I)) or soup.find_all(class_="tc-game")
+    
+    # Находим все элементы игр на главной странице
+    game_items = soup.find_all(class_=re.compile(r"promo-game-item|tc-game|promo-game", re.I))
+    
+    # Если элементов-оберток нет, попробуем собрать по заголовкам игр
+    if not game_items:
+        game_items = soup.find_all(class_="game-title")
+        
     categories = []
     
-    for section in promo_game_sections:
-        # Название игры
-        title_el = section.find(["h3", "h4", "a", "span"])
-        if not title_el:
-            title_el = section
-        game_name = title_el.text.strip()
+    for item in game_items:
+        # Находим название игры и главную ссылку
+        title_el = item.find(class_="game-title") or item
+        if title_el.name != "a":
+            link_el = title_el.find("a")
+        else:
+            link_el = title_el
+            
+        if not link_el:
+            link_el = item.find("a")
+            
+        if not link_el:
+            continue
+            
+        game_name = link_el.text.strip()
         game_name = re.sub(r'\s+', ' ', game_name)
         
+        # Пропускаем служебные ссылки
         if not game_name or any(w in game_name.lower() for w in ("описание", "контакты", "чат", "помощь")):
             continue
             
-        # Находим ссылку на саму игру
-        href = ""
-        link_el = section if section.name == "a" else section.find("a")
-        if link_el:
-            href = link_el.get("href", "")
-            
+        href = link_el.get("href", "")
+        
         game_id = None
-        game_id_match = re.search(r"/(?:lots|categories|games)/(\d+)/", href)
+        game_id_match = re.search(r"/(?:lots|chips|currency|categories|games)/(\d+)/", href)
         if game_id_match:
             game_id = game_id_match.group(1)
             
         subcategories = []
-        # Пытаемся найти вложенные подразделы
-        sub_list = section.find_next_sibling(class_=re.compile(r"tc-subcategories|promo-subcategories", re.I))
+        
+        # Находим список подразделов (ul с классом list-inline)
+        sub_list = item.find("ul", class_=re.compile(r"list-inline|subcategories", re.I))
+        if not sub_list:
+            # Попробуем найти как следующий соседний элемент
+            sub_list = item.find_next_sibling(class_=re.compile(r"list-inline|subcategories|tc-subcategories", re.I))
+            
         if sub_list:
             for sub_a in sub_list.find_all("a"):
                 sub_href = sub_a.get("href", "")
-                sub_id_match = re.search(r"/lots/(\d+)/", sub_href)
-                sub_id = sub_id_match.group(1) if sub_id_match else None
-                
-                if sub_id:
+                sub_id_match = re.search(r"/(lots|chips|currency)/(\d+)/", sub_href)
+                if sub_id_match:
+                    sub_type = sub_id_match.group(1)
+                    sub_id = sub_id_match.group(2)
                     sub_name = sub_a.text.strip()
                     subcategories.append({
                         "node_id": sub_id,
                         "name": sub_name,
-                        "url": f"https://funpay.com/lots/{sub_id}/"
+                        "type": sub_type,
+                        "url": f"https://funpay.com/{sub_type}/{sub_id}/"
                     })
                     
-        categories.append({
-            "game_id": game_id,
-            "name": game_name,
-            "url": href if href.startswith("http") else f"https://funpay.com{href}",
-            "subcategories": subcategories
-        })
-        
+        # Если подразделов нет, но есть сама игра (например, CS2, Rust), добавляем саму игру как виртуальный подраздел
+        if not subcategories and game_id:
+            type_match = re.search(r"/(lots|chips|currency|categories|games)/", href)
+            cat_type = type_match.group(1) if type_match else "lots"
+            if cat_type in ("categories", "games"):
+                cat_type = "lots"
+            subcategories.append({
+                "node_id": game_id,
+                "name": "Общий раздел",
+                "type": cat_type,
+                "url": href if href.startswith("http") else f"https://funpay.com{href}"
+            })
+            
+        if subcategories:
+            categories.append({
+                "game_id": game_id,
+                "name": game_name,
+                "url": href if href.startswith("http") else f"https://funpay.com{href}",
+                "subcategories": subcategories
+            })
+            
     return categories
 
 def parse_trade_page_for_raising(html: str, node_id: str, default_category_name: str) -> Tuple[Optional[str], Optional[str], str]:

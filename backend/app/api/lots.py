@@ -552,10 +552,26 @@ async def sync_global_categories(
     current_user: User = Depends(get_current_user)
 ) -> Any:
     """Синхронизировать и спарсить все глобальные категории товаров с главной страницы Funpay."""
-    client = FanpayClient("", "", "", {})
+    # Пытаемся найти верифицированный аккаунт с прокси, чтобы обойти защиту Cloudflare
+    acc_stmt = select(FanpayAccount).order_by(FanpayAccount.proxy_url.desc().nulls_last())
+    acc_res = await db.execute(acc_stmt)
+    active_account = acc_res.scalars().first()
+    
+    if active_account:
+        logger.info(f"Используем сессию аккаунта '{active_account.name}' (прокси: {active_account.proxy_url}) для обхода Cloudflare при синхронизации категорий.")
+        client = FanpayClient(
+            golden_key=active_account.golden_key,
+            proxy_url=active_account.proxy_url,
+            user_agent=active_account.user_agent,
+            cookies=active_account.cookies
+        )
+    else:
+        logger.warning("Нет доступных аккаунтов с прокси. Пытаемся сделать прямой анонимный запрос к FunPay...")
+        client = FanpayClient("", "", "", {})
+        
     categories = await client.parse_all_categories_and_subcategories()
     if not categories:
-        raise HTTPException(status_code=400, detail="Не удалось спарсить категории. Проверьте соединение с Funpay.")
+        raise HTTPException(status_code=400, detail="Не удалось спарсить категории. Проверьте соединение с Funpay или добавьте аккаунт с рабочим прокси.")
     
     # Очищаем таблицу и записываем новые
     await db.execute(text("DELETE FROM funpay_global_categories"))
@@ -577,7 +593,7 @@ async def sync_global_categories(
                 added_count += 1
                 
     await db.commit()
-    return {"success": True, "message": f"Успешно синхронизировано {added_count} подразделов с Funpay."}
+    return {"success": True, "message": f"Успешно синхронизировано {added_count} оригинальных подразделов с FunPay."}
 
 
 @router.get("/global-categories", response_model=List[GlobalCategoryResponse])
