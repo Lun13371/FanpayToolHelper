@@ -411,7 +411,8 @@ class FanpayClient:
                     raise_res = await client.post(raise_url, data=payload, headers=headers)
                     if raise_res.status_code == 200:
                         res_json = raise_res.json()
-                        if res_json.get("success", False):
+                        is_success = res_json.get("success", False) or not res_json.get("error")
+                        if is_success:
                             yield {
                                 "type": "success",
                                 "category": category_name,
@@ -419,7 +420,7 @@ class FanpayClient:
                                 "message": f"Категория успешно поднята! (разделов: {len(nodes_list)})"
                             }
                         else:
-                            msg = res_json.get("desc", "Кулдаун")
+                            msg = res_json.get("msg") or res_json.get("desc") or "Кулдаун"
                             yield {
                                 "type": "cooldown",
                                 "category": category_name,
