@@ -1,17 +1,81 @@
 import logging
 import re
 import json
+import asyncio
+import random
+import time
 from typing import List, Optional, Tuple, Dict, Any, AsyncGenerator
 from bs4 import BeautifulSoup
 import httpx
 
 logger = logging.getLogger("fanpay.client")
 
+class RetryingAsyncClient(httpx.AsyncClient):
+    """
+    Кастомный HTTPX AsyncClient с автоматическим повтором запросов при 429 ошибке (Too Many Requests)
+    и временных ошибках сервера (500, 502, 503, 504) с экспоненциальной задержкой.
+    Также добавляет умные задержки (jitter) между последовательными запросами к Funpay для симуляции человека.
+    """
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.last_request_time = 0.0
+
+    async def request(self, method: str, url: Any, **kwargs) -> httpx.Response:
+        max_retries = 5
+        base_delay = 1.5
+        response = None
+        
+        # Не ретривим не-Funpay запросы (например, гео-локатор)
+        is_funpay = "funpay.com" in str(url)
+        
+        if is_funpay:
+            # Имитируем человеческую задержку перехода между страницами (human page transition delay / jitter)
+            # Если между запросами прошло меньше 0.6 - 1.8 сек, поспим рандомно перед отправкой нового запроса
+            now = time.time()
+            elapsed = now - self.last_request_time
+            required_delay = random.uniform(0.6, 1.8)
+            if self.last_request_time > 0.0 and elapsed < required_delay:
+                sleep_time = required_delay - elapsed
+                await asyncio.sleep(sleep_time)
+        
+        for attempt in range(max_retries):
+            try:
+                response = await super().request(method, url, **kwargs)
+                
+                # Если все хорошо или это не Funpay, возвращаем ответ
+                if not is_funpay or response.status_code not in (429, 500, 502, 503, 504):
+                    if is_funpay:
+                        self.last_request_time = time.time()
+                    return response
+                
+                # Вычисляем экспоненциальную задержку
+                delay = base_delay * (2 ** attempt)
+                logger.warning(
+                    f"Код {response.status_code} для {url}. "
+                    f"Повтор через {delay:.2f} сек (попытка {attempt + 1}/{max_retries})."
+                )
+                await asyncio.sleep(delay)
+                
+            except (httpx.ConnectError, httpx.TimeoutException, httpx.NetworkError) as e:
+                if attempt == max_retries - 1:
+                    raise e
+                delay = base_delay * (2 ** attempt)
+                logger.warning(
+                    f"Ошибка сети/таймаут ({str(e)}) при запросе к {url}. "
+                    f"Повтор через {delay:.2f} сек (попытка {attempt + 1}/{max_retries})."
+                )
+                await asyncio.sleep(delay)
+                
+        if is_funpay:
+            self.last_request_time = time.time()
+        return response
+
 class FanpayClient:
     """
     Низкоуровневый клиент для взаимодействия с API и веб-версией Funpay.
     Использует HTTPX для асинхронных запросов через резидентные прокси и с куками пользователя.
     """
+
     def __init__(
         self, 
         golden_key: str, 
@@ -27,6 +91,88 @@ class FanpayClient:
         # Обязательно вшиваем golden_key в куки
         self.cookies["golden_key"] = golden_key
 
+    def _get_aligned_headers(self) -> Dict[str, str]:
+        """
+        Генерирует максимально точные, легитимные заголовки браузера (Chrome, Edge, Firefox, Safari)
+        на основе текущего User-Agent для обхода систем детекта Cloudflare и FunPay.
+        """
+        ua = self.user_agent or "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:125.0) Gecko/20100101 Firefox/125.0"
+        ua_lower = ua.lower()
+        
+        # Определяем платформу для Sec-Ch-Ua-Platform
+        platform = '"Windows"'
+        if "macintosh" in ua_lower or "mac os" in ua_lower:
+            platform = '"macOS"'
+        elif "linux" in ua_lower:
+            platform = '"Linux"'
+        elif "android" in ua_lower:
+            platform = '"Android"'
+        elif "iphone" in ua_lower or "ipad" in ua_lower:
+            platform = '"iOS"'
+
+        # Базовые заголовки, общие для всех браузеров
+        headers = {
+            "User-Agent": ua,
+            "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7",
+            "Referer": "https://funpay.com/",
+            "Upgrade-Insecure-Requests": "1"
+        }
+
+        # 1. Google Chrome / Chromium
+        if "chrome" in ua_lower or "chromium" in ua_lower:
+            chrome_match = re.search(r"chrome/(\d+)", ua_lower)
+            chrome_ver = chrome_match.group(1) if chrome_match else "125"
+            
+            headers.update({
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
+                "Sec-Ch-Ua": f'"Not/A)Brand";v="8", "Chromium";v="{chrome_ver}", "Google Chrome";v="{chrome_ver}"',
+                "Sec-Ch-Ua-Mobile": "?0",
+                "Sec-Ch-Ua-Platform": platform,
+                "Sec-Fetch-Dest": "document",
+                "Sec-Fetch-Mode": "navigate",
+                "Sec-Fetch-Site": "same-origin",
+                "Sec-Fetch-User": "?1"
+            })
+            
+        # 2. Microsoft Edge
+        elif "edg" in ua_lower:
+            edge_match = re.search(r"edg/(\d+)", ua_lower)
+            edge_ver = edge_match.group(1) if edge_match else "125"
+            chrome_match = re.search(r"chrome/(\d+)", ua_lower)
+            chrome_ver = chrome_match.group(1) if chrome_match else "125"
+            
+            headers.update({
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
+                "Sec-Ch-Ua": f'"Not/A)Brand";v="8", "Chromium";v="{chrome_ver}", "Microsoft Edge";v="{edge_ver}"',
+                "Sec-Ch-Ua-Mobile": "?0",
+                "Sec-Ch-Ua-Platform": platform,
+                "Sec-Fetch-Dest": "document",
+                "Sec-Fetch-Mode": "navigate",
+                "Sec-Fetch-Site": "same-origin",
+                "Sec-Fetch-User": "?1"
+            })
+            
+        # 3. Mozilla Firefox
+        elif "firefox" in ua_lower:
+            headers.update({
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+                "Accept-Language": "ru-RU,ru;q=0.8,en-US;q=0.5,en;q=0.3"
+            })
+            
+        # 4. Apple Safari
+        elif "safari" in ua_lower:
+            headers.update({
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+            })
+            
+        # 5. Дефолтные совместимые заголовки
+        else:
+            headers.update({
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8"
+            })
+
+        return headers
+
     def _get_client(self) -> httpx.AsyncClient:
         """
         Создает асинхронный HTTP-клиент с настроенными заголовками, прокси и куками.
@@ -34,17 +180,15 @@ class FanpayClient:
         # Настройка прокси (SOCKS5/HTTP)
         proxy = self.proxy_url if self.proxy_url else None
 
-        headers = {
-            "User-Agent": self.user_agent,
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-            "Accept-Language": "ru-RU,ru;q=0.8,en-US;q=0.5,en;q=0.3",
-            "Referer": "https://funpay.com/"
-        }
+        # Получаем легитимный набор заголовков на основе User-Agent
+        headers = self._get_aligned_headers()
 
         # Конвертируем все значения кук в строки для HTTPX
         cleaned_cookies = {k: str(v) for k, v in self.cookies.items()}
+        # Вшиваем cookie_prefs: "1" для не-API запросов к страницам Funpay
+        cleaned_cookies["cookie_prefs"] = "1"
 
-        return httpx.AsyncClient(
+        return RetryingAsyncClient(
             proxy=proxy,
             headers=headers,
             cookies=cleaned_cookies,
@@ -244,16 +388,18 @@ class FanpayClient:
                             game_name = re.sub(r"\s+", " ", game_name).strip()
                             lot_game_map[lot_id] = game_name
                 
-                # Ограничим первыми 5 лотами для безопасности и скорости
-                target_lot_ids = lot_ids[:5]
+                # Увеличим лимит до 40 лотов для полной обработки всех категорий
+                target_lot_ids = lot_ids[:40]
                 total_lots = len(target_lot_ids)
                 
-                yield {"type": "init", "progress": 25, "message": f"Найдено лотов для проверки: {total_lots}. Начинаем обход..."}
+                yield {"type": "init", "progress": 20, "message": f"Найдено лотов: {len(lot_ids)}. Анализируем первые {total_lots} для сбора категорий..."}
                 
                 processed_nodes = set()
+                games_to_raise = {} # game_id -> {"category_name": str, "node_ids": set()}
                 
                 for idx, lot_id in enumerate(target_lot_ids):
-                    current_progress = 25 + int(((idx + 1) / total_lots) * 70)
+                    # Прогресс сбора: от 20% до 80%
+                    current_progress = 20 + int(((idx + 1) / total_lots) * 60)
                     yield {"type": "lot_start", "progress": current_progress, "message": f"Анализ лота {idx + 1}/{total_lots} (ID: {lot_id})..."}
                     
                     edit_url = f"https://funpay.com/lots/offerEdit?offer={lot_id}"
@@ -271,7 +417,7 @@ class FanpayClient:
                         continue
                         
                     if node_id in processed_nodes:
-                        yield {"type": "log", "message": f"Раздел для node_id {node_id} уже обработан ранее."}
+                        yield {"type": "log", "message": f"Раздел для node_id {node_id} уже обработан."}
                         continue
                     
                     processed_nodes.add(node_id)
@@ -292,6 +438,9 @@ class FanpayClient:
                     game_id = btn_raise.get("data-game")
                     node_id_from_btn = btn_raise.get("data-node") or node_id
                     
+                    if not (game_id and node_id_from_btn):
+                        continue
+                        
                     # 1. Сначала берем название игры, которое мы сохранили из публичного профиля
                     category_name = lot_game_map.get(lot_id, "")
                     
@@ -300,10 +449,8 @@ class FanpayClient:
                     breadcrumb = soup_trade.find(class_="breadcrumb")
                     if breadcrumb:
                         lis = [li.text.strip() for li in breadcrumb.find_all("li") if li.text.strip()]
-                        # Исключаем главный пункт "FunPay"
                         if lis and lis[0].lower() in ("funpay", "фанпей"):
                             lis = lis[1:]
-                        # Фильтруем технические слова типа "Ваши предложения" из хлебных крошек
                         lis = [item for item in lis if not any(w in item.lower() for w in ("ваши предложения", "ваши предложения", "ваши товары", "поднять", "управление", "предложения"))]
                         if lis:
                             trade_category = " / ".join(lis)
@@ -315,7 +462,6 @@ class FanpayClient:
                             if not any(w in h1_text.lower() for w in ("ваши предложения", "ваши товары", "поднять", "управление", "предложения")):
                                 trade_category = h1_text
                     
-                    # Если нашли красивое название подраздела, используем его, иначе используем имя игры из профиля
                     if trade_category:
                         category_name = trade_category
                     
@@ -325,15 +471,35 @@ class FanpayClient:
                         if any(w in category_name.lower() for w in ("поднять", "предложен", "ваши")):
                             category_name = f"Раздел {node_id}"
                     
-                    if not (game_id and node_id_from_btn):
-                        yield {"type": "log", "message": f"Некорректные параметры game_id/node_id для {category_name}"}
-                        continue
-                        
-                    # Выполняем POST запрос на поднятие лотов
+                    # Сохраняем собранные данные разделов для пакетного поднятия
+                    if game_id not in games_to_raise:
+                        games_to_raise[game_id] = {
+                            "category_name": category_name,
+                            "node_ids": set()
+                        }
+                    games_to_raise[game_id]["node_ids"].add(node_id_from_btn)
+                
+                if not games_to_raise:
+                    yield {"type": "empty", "progress": 100, "message": "Не найдено активных категорий для поднятия."}
+                    return
+                
+                # Запускаем пакетное поднятие
+                yield {"type": "init", "progress": 80, "message": f"Сбор данных завершен. Найдено уникальных игр: {len(games_to_raise)}. Начинаем пакетное поднятие..."}
+                
+                total_games = len(games_to_raise)
+                for g_idx, (game_id, data) in enumerate(games_to_raise.items()):
+                    # Прогресс поднятия: от 80% до 98%
+                    current_progress = 80 + int(((g_idx + 1) / total_games) * 18)
+                    category_name = data["category_name"]
+                    nodes_list = list(data["node_ids"])
+                    
+                    yield {"type": "lot_start", "progress": current_progress, "message": f"Поднятие игры {category_name} (разделов: {len(nodes_list)})..."}
+                    
                     raise_url = "https://funpay.com/lots/raise"
                     payload = {
                         "game_id": game_id,
-                        "node_id": node_id_from_btn,
+                        "node_id": nodes_list[0],
+                        "node_ids[]": nodes_list,
                         "csrf_token": csrf_token
                     }
                     headers = {
@@ -349,7 +515,7 @@ class FanpayClient:
                                 "type": "success",
                                 "category": category_name,
                                 "progress": current_progress,
-                                "message": "Лоты успешно подняты!"
+                                "message": f"Категория успешно поднята! (разделов: {len(nodes_list)})"
                             }
                         else:
                             msg = res_json.get("desc", "Кулдаун")
@@ -367,7 +533,7 @@ class FanpayClient:
                             "message": f"Ошибка запроса к Funpay: {raise_res.status_code}"
                         }
                 
-                yield {"type": "done", "progress": 100, "message": "Поднятие лотов завершено!"}
+                yield {"type": "done", "progress": 100, "message": "Поднятие всех лотов успешно завершено!"}
                     
             except Exception as e:
                 logger.error(f"Исключение при ручном поднятии лотов: {str(e)}")

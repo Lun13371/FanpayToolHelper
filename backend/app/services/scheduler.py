@@ -268,7 +268,8 @@ class SchedulerManager:
                         await self.add_log(db, account_id, f"Генерация ответа ИИ для {order['buyer_name']} в ноду {node_id}...")
                         
                         # Собираем контекст лота
-                        context_prompt = f"\nОписание купленного товара: {lot_name}\nСтатус сделки: Оплачена."
+                        current_lot_name = order["lot_name"]
+                        context_prompt = f"\nОписание купленного товара: {current_lot_name}\nСтатус сделки: Оплачена."
                         full_system_prompt = account.system_prompt + context_prompt
 
                         # Вызываем асинхронный сервис ИИ
