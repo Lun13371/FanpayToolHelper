@@ -107,13 +107,15 @@ class FanpayClient:
     _csrf_cache = {}  # Кэш CSRF-токенов в оперативной памяти (golden_key -> csrf_token)
     _client_sessions = {}  # Кэш активных сессий HTTPX (golden_key -> RetryingAsyncClient)
 
-    def __new__(cls, golden_key: str, proxy_url: str, user_agent: Optional[str] = None, cookies: Optional[Dict[str, Any]] = None):
+    def __new__(cls, golden_key: str, proxy_url: str, user_agent: Optional[str] = None, cookies: Optional[Dict[str, Any]] = None, account_id: Optional[int] = None):
         if golden_key in cls._instances:
             # Обновляем динамические параметры существующего синглтон-клиента
             instance = cls._instances[golden_key]
             instance.proxy_url = proxy_url
             if user_agent:
                 instance.user_agent = user_agent
+            if account_id:
+                instance.account_id = account_id
             return instance
             
         instance = super().__new__(cls)
@@ -125,9 +127,12 @@ class FanpayClient:
         golden_key: str, 
         proxy_url: str, 
         user_agent: Optional[str] = None,
-        cookies: Optional[Dict[str, Any]] = None
+        cookies: Optional[Dict[str, Any]] = None,
+        account_id: Optional[int] = None
     ):
         if hasattr(self, "_initialized"):
+            if account_id:
+                self.account_id = account_id
             return
             
         self.golden_key = golden_key
@@ -139,6 +144,7 @@ class FanpayClient:
         self.cookies["golden_key"] = golden_key
         
         self.csrf_token = None
+        self.account_id = account_id
         self._initialized = True
 
     def _get_aligned_headers(self) -> Dict[str, str]:
@@ -615,9 +621,55 @@ class FanpayClient:
 
                         # Если все успешно во внутреннем блоке ответа
                         if not res_json.get("error") and (not res_json.get("response") or not res_json["response"].get("error")):
+                            if self.account_id:
+                                try:
+                                    from datetime import datetime
+                                    from app.services.chat_broadcast import chat_broadcast_manager
+                                    import asyncio
+                                    asyncio.create_task(
+                                        chat_broadcast_manager.broadcast_chat_update(
+                                            account_id=self.account_id,
+                                            update_type="new_message",
+                                            data={
+                                                "node_id": node_id,
+                                                "message": {
+                                                    "author": "Я",
+                                                    "text": text,
+                                                    "is_me": True,
+                                                    "time": datetime.utcnow().strftime("%H:%M"),
+                                                    "is_system": False
+                                                }
+                                            }
+                                        )
+                                    )
+                                except Exception as ws_err:
+                                    logger.error(f"Ошибка бродкаста отправленного сообщения: {ws_err}")
                             return True
                     except Exception:
                         if "error" not in res.text or '"error":null' in res.text:
+                            if self.account_id:
+                                try:
+                                    from datetime import datetime
+                                    from app.services.chat_broadcast import chat_broadcast_manager
+                                    import asyncio
+                                    asyncio.create_task(
+                                        chat_broadcast_manager.broadcast_chat_update(
+                                            account_id=self.account_id,
+                                            update_type="new_message",
+                                            data={
+                                                "node_id": node_id,
+                                                "message": {
+                                                    "author": "Я",
+                                                    "text": text,
+                                                    "is_me": True,
+                                                    "time": datetime.utcnow().strftime("%H:%M"),
+                                                    "is_system": False
+                                                }
+                                            }
+                                        )
+                                    )
+                                except Exception:
+                                    pass
                             return True
                     return True
                 

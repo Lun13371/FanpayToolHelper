@@ -93,7 +93,8 @@ class SchedulerManager:
                 golden_key=account.golden_key,
                 proxy_url=account.proxy_url,
                 user_agent=account.user_agent,
-                cookies=account.cookies
+                cookies=account.cookies,
+                account_id=account_id
             )
             success, username, updated_cookies = await client.verify_session()
             if success and updated_cookies:
@@ -120,7 +121,7 @@ class SchedulerManager:
                 await self.schedule_next_raise(account_id, initial=False)
                 return
 
-            client = FanpayClient(account.golden_key, account.proxy_url, account.user_agent, account.cookies)
+            client = FanpayClient(account.golden_key, account.proxy_url, account.user_agent, account.cookies, account_id=account_id)
             success, msg = await client.raise_offers()
             
             if success:
@@ -141,7 +142,7 @@ class SchedulerManager:
             if not account or not account.is_active:
                 return
 
-            client = FanpayClient(account.golden_key, account.proxy_url, account.user_agent, account.cookies)
+            client = FanpayClient(account.golden_key, account.proxy_url, account.user_agent, account.cookies, account_id=account_id)
             
             # 1. Получаем список оплаченных заказов
             paid_orders = await client.get_paid_orders()
@@ -306,7 +307,7 @@ class SchedulerManager:
             if not account or not account.is_active:
                 return
 
-            client = FanpayClient(account.golden_key, account.proxy_url, account.user_agent, account.cookies)
+            client = FanpayClient(account.golden_key, account.proxy_url, account.user_agent, account.cookies, account_id=account_id)
 
             # Получаем все настройки лотов для демпинга
             q_lots = select(LotSettings).where(
@@ -420,7 +421,7 @@ class SchedulerManager:
             if not account.review_followup_active:
                 return
 
-            client = FanpayClient(account.golden_key, account.proxy_url, account.user_agent, account.cookies)
+            client = FanpayClient(account.golden_key, account.proxy_url, account.user_agent, account.cookies, account_id=account_id)
             
             # Получаем список проданных заказов
             # Мы можем проверить страницу продаж. Неподтвержденные заказы висят в статусе "оплачен" (ожидает подтверждения)
@@ -483,7 +484,8 @@ class SchedulerManager:
                 golden_key=account.golden_key,
                 proxy_url=account.proxy_url,
                 user_agent=account.user_agent,
-                cookies=account.cookies
+                cookies=account.cookies,
+                account_id=account_id
             )
             
             await self.add_log(db, account_id, "Запуск фоновой полной синхронизации...")

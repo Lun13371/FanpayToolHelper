@@ -63,6 +63,72 @@ export default function ChatsSubTab() {
     }
   }, [selectedAccountId, token, activeNodeId]);
 
+  // Эффект WebSocket для мгновенных обновлений чата в реальном времени
+  useEffect(() => {
+    if (!selectedAccountId || !token) return;
+
+    let socket: WebSocket | null = null;
+    let reconnectTimeout: any = null;
+
+    const connectWS = () => {
+      try {
+        const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        const wsHost = API_URL.replace('http://', '').replace('https://', '');
+        const wsUrl = `${protocol}//${wsHost}/api/v1/accounts/${selectedAccountId}/chats/ws?token=${token}`;
+        
+        socket = new WebSocket(wsUrl);
+
+        socket.onopen = () => {
+          console.log('Real-Time Chat WebSocket подключен.');
+        };
+
+        socket.onmessage = (event) => {
+          try {
+            const payload = JSON.parse(event.data);
+            if (payload.type === 'new_message') {
+              const { node_id, message } = payload.data;
+              if (node_id === activeNodeId) {
+                setMessages((prev) => {
+                  const exists = prev.some(m => m.text === message.text && m.author === message.author);
+                  if (exists) return prev;
+                  return [...prev, message];
+                });
+              }
+              fetchChats();
+            } else if (payload.type === 'chat_update') {
+              fetchChats();
+            }
+          } catch (err) {
+            console.error('Ошибка парсинга сокет-сообщения:', err);
+          }
+        };
+
+        socket.onclose = () => {
+          console.log('Chat WebSocket закрыт, повторное подключение через 5 секунд...');
+          reconnectTimeout = setTimeout(connectWS, 5000);
+        };
+
+        socket.onerror = (err) => {
+          console.error('Ошибка Chat WebSocket:', err);
+        };
+      } catch (e) {
+        console.error('Ошибка инициализации WebSocket:', e);
+      }
+    };
+
+    connectWS();
+
+    return () => {
+      if (socket) {
+        socket.onclose = null; // Отменяем автореконнект при размонтировании
+        socket.close();
+      }
+      if (reconnectTimeout) {
+        clearTimeout(reconnectTimeout);
+      }
+    };
+  }, [selectedAccountId, token, activeNodeId]);
+
   // Мессенджер: получение списка чатов
   const fetchChats = async () => {
     if (!selectedAccountId || chatsLoadingRef.current) return;

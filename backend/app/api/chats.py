@@ -1,6 +1,6 @@
 from typing import Any, List
 from datetime import datetime
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -49,7 +49,8 @@ async def list_chats(
         golden_key=account.golden_key,
         proxy_url=account.proxy_url,
         user_agent=account.user_agent,
-        cookies=account.cookies
+        cookies=account.cookies,
+        account_id=account_id
     )
 
     try:
@@ -77,7 +78,8 @@ async def list_chat_messages(
         golden_key=account.golden_key,
         proxy_url=account.proxy_url,
         user_agent=account.user_agent,
-        cookies=account.cookies
+        cookies=account.cookies,
+        account_id=account_id
     )
 
     try:
@@ -106,7 +108,8 @@ async def send_operator_message(
         golden_key=account.golden_key,
         proxy_url=account.proxy_url,
         user_agent=account.user_agent,
-        cookies=account.cookies
+        cookies=account.cookies,
+        account_id=account_id
     )
 
     success = await client.send_message(node_id, data.text)
@@ -119,3 +122,65 @@ async def send_operator_message(
     await db.commit()
 
     return {"success": True, "message": "Сообщение успешно отправлено, ИИ автоответчик приостановлен на 20 минут"}
+
+
+# =========================================================================
+# WEBSOCKET ЭНДПОИНТ ДЛЯ ЖИВЫХ СООБЩЕНИЙ ЧАТА
+# =========================================================================
+
+@router.websocket("/ws")
+async def websocket_chats_endpoint(
+    websocket: WebSocket,
+    account_id: int,
+    db: AsyncSession = Depends(get_session)
+):
+    """
+    WebSocket-подключение для получения обновлений чатов и переписок в реальном времени.
+    """
+    token = websocket.query_params.get("token")
+    if not token:
+        await websocket.close(code=4003)  # Forbidden
+        return
+
+    try:
+        from jose import jwt
+        from app.config import settings
+        payload = jwt.decode(token, settings.JWT_SECRET, algorithms=["HS256"])
+        username: str = payload.get("sub")
+        if not username:
+             await websocket.close(code=4003)
+             return
+    except Exception:
+        await websocket.close(code=4003)
+        return
+
+    # Подгружаем юзера из БД
+    from sqlmodel import select
+    query_user = select(User).where(User.username == username)
+    res_user = await db.execute(query_user)
+    user = res_user.scalar_one_or_none()
+    
+    if not user or not user.is_active or (not user.is_approved and user.role != UserRole.ADMIN):
+        await websocket.close(code=4003)
+        return
+
+    # Проверяем права доступа к аккаунту
+    try:
+        await verify_account_access(db, user, account_id)
+    except HTTPException:
+        await websocket.close(code=4003)
+        return
+
+    # Подключаем клиента к менеджеру трансляций чата
+    from app.services.chat_broadcast import chat_broadcast_manager
+    await chat_broadcast_manager.connect(websocket, account_id)
+    
+    try:
+        while True:
+            # Удерживаем сокет открытым
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        pass
+    finally:
+        chat_broadcast_manager.disconnect(websocket, account_id)
+
