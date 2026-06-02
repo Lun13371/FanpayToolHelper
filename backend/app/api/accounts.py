@@ -155,11 +155,6 @@ async def create_account(
     owner: User = Depends(get_current_owner_or_admin)
 ) -> Any:
     """Добавление нового аккаунта Funpay (Для Владельцев/Админа)."""
-    from app.config import settings
-    # Strict proxy check, except in dev environment
-    if not data.proxy_url and settings.ENVIRONMENT != "dev":
-        raise HTTPException(status_code=400, detail="Прокси SOCKS5/HTTP строго обязателен для каждого аккаунта в продакшене ради безопасности!")
-
     new_account = FanpayAccount(
         user_id=owner.id,
         name=data.name,

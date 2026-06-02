@@ -852,3 +852,80 @@ def parse_lot_details_page(html: str, lot_id: str) -> Dict[str, Any]:
         "buyer_prices": buyer_prices,
         "form_action": form_action
     }
+
+def parse_category_offers_list(html: str) -> List[Dict[str, Any]]:
+    """
+    Парсит HTML страницы категории FunPay (например, /lots/81/) и извлекает список предложений.
+    """
+    soup = BeautifulSoup(html, "html.parser")
+    # Каждая строка предложения является ссылкой с классом 'tc-item'
+    offer_rows = soup.find_all("a", class_="tc-item")
+    offers = []
+    
+    for row in offer_rows:
+        href = row.get("href", "")
+        # Извлекаем ID лота из href (например, /lots/offer?id=12345)
+        lot_id_match = re.search(r"id=(\d+)", href)
+        if not lot_id_match:
+            continue
+            
+        lot_id = lot_id_match.group(1)
+        
+        # Описание предложения
+        desc_el = row.find(class_="tc-desc-text")
+        description = desc_el.text.strip() if desc_el else ""
+        if not description:
+            # Резервный поиск описания
+            desc_container = row.find(class_="tc-desc")
+            if desc_container:
+                description = desc_container.text.strip()
+                
+        # Имя продавца (tc-user)
+        user_el = row.find(class_="tc-user")
+        user = ""
+        if user_el:
+            username_el = user_el.find(class_="media-body") or user_el
+            # Находим первый div внутри media-body или берем текст
+            inner_div = username_el.find("div")
+            user = inner_div.text.strip() if inner_div else username_el.text.strip()
+            # Очищаем от переносов строк
+            user = re.sub(r"\s+", " ", user).strip()
+            
+        # Остаток (tc-amount)
+        amount_el = row.find(class_="tc-amount")
+        amount = 1
+        if amount_el:
+            amount_text = amount_el.text.strip()
+            try:
+                # Очищаем от букв (например, "10 шт." -> "10")
+                cleaned_amount = "".join(filter(str.isdigit, amount_text))
+                if cleaned_amount:
+                    amount = int(cleaned_amount)
+            except Exception:
+                pass
+                
+        # Цена (tc-price)
+        price_el = row.find(class_="tc-price")
+        price = 0.0
+        if price_el:
+            price_text = price_el.text.strip()
+            try:
+                # Убираем пробелы, знаки валют и меняем запятую на точку
+                cleaned_price = price_text.replace("₽", "").replace("$", "").replace("€", "").replace(" ", "").replace("\xa0", "").replace(",", ".").strip()
+                # Извлекаем числовое значение (например, "150.50" из "150.50")
+                price_match = re.search(r"(\d+(?:\.\d+)?)", cleaned_price)
+                if price_match:
+                    price = float(price_match.group(1))
+            except Exception:
+                pass
+                
+        offers.append({
+            "lot_id": lot_id,
+            "description": description,
+            "user": user,
+            "amount": amount,
+            "price": price
+        })
+        
+    return offers
+

@@ -99,3 +99,43 @@ export interface AIKey {
   error_count: number;
   last_used_at: string;
 }
+
+export interface AgentRun {
+  id: number;
+  status: 'idle' | 'running' | 'completed' | 'failed';
+  mode: 'auto' | 'manual' | 'full';
+  limit_categories: number;
+  target_account_id?: number;
+  total_cost_tokens: number;
+  created_at: string;
+  completed_at?: string;
+}
+
+export interface AgentState {
+  status: 'pending' | 'running' | 'completed' | 'failed';
+  current_task?: string;
+  tokens_used: number;
+}
+
+export interface AgentLog {
+  id: number;
+  agent_name: string;
+  message: string;
+  level: 'info' | 'warning' | 'error';
+  created_at: string;
+}
+
+export interface GeneratedLot {
+  id: number;
+  run_id: number;
+  game_name: string;
+  subcategory_name: string;
+  title: string;
+  description: string;
+  price: number;
+  amount: number;
+  fields_json: Record<string, any>;
+  ai_reasoning?: string;
+  created_at: string;
+}
+

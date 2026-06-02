@@ -29,7 +29,21 @@ async def get_session() -> AsyncGenerator[AsyncSession, None]:
 
 # Функция для автоматического создания таблиц (при первом запуске без Alembic)
 async def init_db() -> None:
+    from sqlalchemy import text
+    # Включаем расширение pgvector для работы векторных эмбеддингов
+    try:
+        async with engine.begin() as conn:
+            await conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
+    except Exception:
+        pass
+
     async with engine.begin() as conn:
+        # Удаляем таблицу инсайтов принудительно, чтобы пересоздать ее с верной размерностью (4096)
+        try:
+            await conn.execute(text("DROP TABLE IF EXISTS agent_insights CASCADE"))
+        except Exception:
+            pass
+
         # Импортируем все модели перед созданием, чтобы SQLModel знал о них
         from app.models.user import User
         from app.models.account import FanpayAccount
@@ -43,6 +57,7 @@ async def init_db() -> None:
         from app.models.ai_log import AILog
         from app.models.log import SystemLogs
         from app.models.global_category import FunpayGlobalCategory
+        from app.models.agents import AgentRun, AgentState, AgentLog, GeneratedLot, AgentInsight
 
         await conn.run_sync(SQLModel.metadata.create_all)
         

@@ -55,6 +55,15 @@ export default function Header() {
           >
             Шаблоны
           </button>
+          <button
+            onClick={() => setActiveTab('agents')}
+            className={`py-1.5 px-3.5 rounded-xl text-xs font-medium shrink-0 transition-all text-brand-cyan hover:text-white flex items-center gap-1 bg-brand-cyan/5 border border-brand-cyan/10 ${
+              activeTab === 'agents' ? 'bg-brand-cyan/20 text-white shadow-sm border-brand-cyan/30' : ''
+            }`}
+          >
+            <Sparkles className="w-3.5 h-3.5 text-brand-cyan" />
+            AI-Анализ
+          </button>
           {user?.role === 'admin' && (
             <>
               <button

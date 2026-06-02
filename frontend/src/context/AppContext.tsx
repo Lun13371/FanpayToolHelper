@@ -8,12 +8,12 @@ interface AppContextType {
   user: User | null;
   accounts: FanpayAccount[];
   selectedAccountId: number | null;
-  activeTab: 'dashboard' | 'delivery' | 'dumping' | 'manager' | 'templates' | 'ai-keys' | 'admin';
+  activeTab: 'dashboard' | 'delivery' | 'dumping' | 'manager' | 'templates' | 'ai-keys' | 'admin' | 'agents';
   setToken: (token: string | null) => void;
   setUser: (user: User | null) => void;
   setAccounts: (accounts: FanpayAccount[]) => void;
   setSelectedAccountId: (id: number | null) => void;
-  setActiveTab: (tab: 'dashboard' | 'delivery' | 'dumping' | 'manager' | 'templates' | 'ai-keys' | 'admin') => void;
+  setActiveTab: (tab: 'dashboard' | 'delivery' | 'dumping' | 'manager' | 'templates' | 'ai-keys' | 'admin' | 'agents') => void;
   fetchAccounts: () => Promise<void>;
   logout: () => void;
 }
@@ -25,7 +25,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
   const [user, setUser] = useState<User | null>(null);
   const [accounts, setAccounts] = useState<FanpayAccount[]>([]);
   const [selectedAccountId, setSelectedAccountId] = useState<number | null>(null);
-  const [activeTab, setActiveTab] = useState<'dashboard' | 'delivery' | 'dumping' | 'manager' | 'templates' | 'ai-keys' | 'admin'>('dashboard');
+  const [activeTab, setActiveTab] = useState<'dashboard' | 'delivery' | 'dumping' | 'manager' | 'templates' | 'ai-keys' | 'admin' | 'agents'>('dashboard');
 
   const fetchMe = async () => {
     if (!token) return;

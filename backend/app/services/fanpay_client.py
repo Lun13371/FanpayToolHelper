@@ -116,6 +116,16 @@ class FanpayClient:
                 instance.user_agent = user_agent
             if account_id:
                 instance.account_id = account_id
+            # Обновляем куки чистыми куками, чтобы сбросить устаревшую сессию в памяти
+            instance.cookies = cookies or {}
+            instance.cookies["golden_key"] = golden_key
+            # Очищаем сессию HTTPX, чтобы она пересоздалась с новыми куками
+            if golden_key in cls._client_sessions:
+                try:
+                    cls._client_sessions[golden_key].close()
+                except Exception:
+                    pass
+                del cls._client_sessions[golden_key]
             return instance
             
         instance = super().__new__(cls)
@@ -312,6 +322,7 @@ class FanpayClient:
                 html = response.text
                 # Если в HTML есть ссылка на выход (в любой локали) или юзер-бар, сессия валидна
                 if "logout" not in html.lower() and "user-link-name" not in html:
+                    logger.warning(f"verify_session: NOT AUTHORIZED. HTML Snippet (first 1000 chars): {html[:1000]}")
                     return False, "Not Authorized (No logout link)", {}
 
                 # Парсим имя пользователя с помощью утилиты

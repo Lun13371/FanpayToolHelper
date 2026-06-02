@@ -8,6 +8,7 @@ from app.models.review import AutoReviewTemplate
 from app.models.competitor import CompetitorBlacklist
 from app.models.ai_key import AIKey
 from app.models.log import SystemLogs
+from app.models.agents import AgentRun, AgentState, AgentLog, GeneratedLot, AgentInsight
 
 __all__ = [
     "User",
@@ -21,4 +22,9 @@ __all__ = [
     "CompetitorBlacklist",
     "AIKey",
     "SystemLogs",
+    "AgentRun",
+    "AgentState",
+    "AgentLog",
+    "GeneratedLot",
+    "AgentInsight",
 ]

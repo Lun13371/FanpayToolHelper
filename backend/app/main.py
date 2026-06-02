@@ -13,6 +13,7 @@ from app.api.chats import router as chats_router
 from app.api.delivery import router as delivery_router
 from app.api.ai_keys import router as ai_keys_router
 from app.api.logs import router as logs_router
+from app.api.agents import router as agents_router
 
 # Настраиваем логирование для приложения
 logging.basicConfig(
@@ -50,6 +51,7 @@ app.include_router(templates_router, prefix="/api/v1")
 app.include_router(chats_router, prefix="/api/v1")
 app.include_router(delivery_router, prefix="/api/v1")
 app.include_router(ai_keys_router, prefix="/api/v1")
+app.include_router(agents_router, prefix="/api/v1")
 app.include_router(logs_router) # Роутер логов содержит WebSockets, подключаем напрямую
 
 
