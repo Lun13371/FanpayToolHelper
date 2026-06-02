@@ -3,14 +3,15 @@ import { createPortal } from 'react-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import { 
   Layers, Plus, RefreshCw, Trash2, Edit2, Check, X, ToggleLeft, ToggleRight, 
-  Sparkles, Sliders, ChevronLeft, Search, FileText, Folder, Loader2
+  Sparkles, Sliders, ChevronLeft, Search, FileText, Folder, Loader2,
+  CheckSquare, Square, Play, CheckCircle2, ChevronDown, ChevronUp
 } from 'lucide-react';
 import { useAppContext, API_URL } from '../../context/AppContext';
 import { handleMouseMove } from '../../utils/mouseTracker';
 import { LotTemplate, LotCreationTemplate } from '../../types';
 
 export default function TemplatesTab() {
-  const { token, user } = useAppContext();
+  const { token, user, accounts, selectedAccountId } = useAppContext();
   
   // Вкладка активная
   const [activeTab, setActiveTab] = useState<'damping' | 'creation'>('damping');
@@ -44,6 +45,25 @@ export default function TemplatesTab() {
   const [creationFieldsValues, setCreationFieldsValues] = useState<Record<string, any>>({});
   const [savingCreationTemplate, setSavingCreationTemplate] = useState(false);
   const [syncingCategories, setSyncingCategories] = useState(false);
+
+  // Состояния для мультивыбора и пакетной публикации шаблонов публикации лотов
+  const [selectedCreationTplIds, setSelectedCreationTplIds] = useState<number[]>([]);
+  const [batchTargetAccountId, setBatchTargetAccountId] = useState<number | null>(null);
+  
+  // Состояния для прогресса пакетной публикации (SSE)
+  const [publishing, setPublishing] = useState(false);
+  const [publishProgress, setPublishingProgress] = useState(0); // Процент 0-100
+  const [publishStatusText, setPublishingStatusText] = useState(''); // Текущий статус
+  const [publishLogs, setPublishingLogs] = useState<{ id: string; time: string; type: 'info' | 'success' | 'error'; message: string }[]>([]);
+  const [showPublishLogs, setShowPublishLogs] = useState(true);
+  const [publishStats, setPublishingStats] = useState({ total: 0, success: 0, failed: 0 });
+  const [publishCompleted, setPublishingCompleted] = useState(false);
+
+  useEffect(() => {
+    if (accounts && accounts.length > 0 && !batchTargetAccountId) {
+      setBatchTargetAccountId(selectedAccountId || accounts[0].id);
+    }
+  }, [accounts, selectedAccountId, batchTargetAccountId]);
 
   useEffect(() => {
     if (token) {
@@ -416,6 +436,208 @@ export default function TemplatesTab() {
     }
   };
 
+  const handlePublishEvent = (event: any) => {
+    const timeStr = new Date().toLocaleTimeString();
+    
+    switch (event.type) {
+      case 'init':
+        setPublishingStats({ total: event.total, success: 0, failed: 0 });
+        setPublishingProgress(0);
+        break;
+
+      case 'template_start':
+        setPublishingStatusText(`Публикация: [${event.game_name}] ${event.template_name} (${event.current} из ${event.total})...`);
+        setPublishingProgress(Math.round(((event.current - 1) / event.total) * 90)); // 0-90% под саму публикацию
+        setPublishingLogs(prev => [
+          ...prev,
+          {
+            id: `start-${event.template_id}-${Date.now()}`,
+            time: timeStr,
+            type: 'info',
+            message: `[Шаг ${event.current}/${event.total}] Публикация лота "${event.template_name}" в раздел "${event.game_name} -> ${event.subcategory_name}"`
+          }
+        ]);
+        break;
+
+      case 'success':
+        setPublishingStats(prev => {
+          const nextSuccess = prev.success + 1;
+          const totalSteps = prev.total || 1;
+          const nextProgress = Math.round(((nextSuccess + prev.failed) / totalSteps) * 90);
+          setPublishingProgress(nextProgress);
+          return { ...prev, success: nextSuccess };
+        });
+        setPublishingLogs(prev => [
+          ...prev,
+          {
+            id: `success-${event.template_id}-${Date.now()}`,
+            time: timeStr,
+            type: 'success',
+            message: `✓ Шаблон "${event.template_name}" успешно опубликован на FunPay!`
+          }
+        ]);
+        break;
+
+      case 'error':
+        setPublishingStats(prev => {
+          const nextFailed = prev.failed + 1;
+          const totalSteps = prev.total || 1;
+          const nextProgress = Math.round(((prev.success + nextFailed) / totalSteps) * 90);
+          setPublishingProgress(nextProgress);
+          return { ...prev, failed: nextFailed };
+        });
+        setPublishingLogs(prev => [
+          ...prev,
+          {
+            id: `error-${event.template_id}-${Date.now()}`,
+            time: timeStr,
+            type: 'error',
+            message: `✗ Ошибка публикации шаблона "${event.template_name}": ${event.message}`
+          }
+        ]);
+        break;
+
+      case 'sync_start':
+        setPublishingStatusText('Синхронизация кэша активных лотов с FunPay...');
+        setPublishingProgress(93);
+        setPublishingLogs(prev => [
+          ...prev,
+          {
+            id: 'sync-start',
+            time: timeStr,
+            type: 'info',
+            message: 'Запрос на синхронизацию списка активных лотов аккаунта...'
+          }
+        ]);
+        break;
+
+      case 'sync_success':
+        setPublishingProgress(97);
+        setPublishingLogs(prev => [
+          ...prev,
+          {
+            id: 'sync-success',
+            time: timeStr,
+            type: 'success',
+            message: '✓ Кэш лотов аккаунта успешно обновлен в базе данных!'
+          }
+        ]);
+        break;
+
+      case 'sync_error':
+        setPublishingProgress(97);
+        setPublishingLogs(prev => [
+          ...prev,
+          {
+            id: 'sync-error',
+            time: timeStr,
+            type: 'error',
+            message: `✗ Предупреждение синхронизации: ${event.message}`
+          }
+        ]);
+        break;
+
+      case 'done':
+        setPublishingProgress(100);
+        setPublishingStatusText('Публикация завершена!');
+        setPublishingLogs(prev => [
+          ...prev,
+          {
+            id: 'done',
+            time: timeStr,
+            type: 'info',
+            message: `Завершено! Всего обработано шаблонов: ${event.total}. Успешно: ${event.success_count}, Ошибок: ${event.failed_count}.`
+          }
+        ]);
+        setPublishingCompleted(true);
+        setSelectedCreationTplIds([]); // Сбрасываем выбор после успешного окончания
+        break;
+
+      default:
+        break;
+    }
+  };
+
+  const handleStartBatchPublish = async () => {
+    if (!batchTargetAccountId || selectedCreationTplIds.length === 0) return;
+    
+    const targetAccount = accounts.find(a => a.id === batchTargetAccountId);
+    if (!targetAccount) return;
+    
+    setPublishing(true);
+    setPublishingProgress(0);
+    setPublishingStatusText('Подготовка к публикации...');
+    setPublishingLogs([
+      {
+        id: 'start',
+        time: new Date().toLocaleTimeString(),
+        type: 'info',
+        message: `Запуск пакетной публикации лотов на аккаунт ${targetAccount.name}. Выбрано шаблонов: ${selectedCreationTplIds.length}`
+      }
+    ]);
+    setPublishingStats({ total: selectedCreationTplIds.length, success: 0, failed: 0 });
+    setPublishingCompleted(false);
+
+    try {
+      const response = await fetch(`${API_URL}/api/v1/lots/templates/creation/publish-batch`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({
+          account_id: batchTargetAccountId,
+          template_ids: selectedCreationTplIds
+        })
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(errorText || 'Сбой подключения к серверу');
+      }
+
+      if (!response.body) {
+        throw new Error('Ответ сервера пустой (отсутствует поток данных)');
+      }
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder('utf-8');
+      let buffer = '';
+
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+
+        for (const line of lines) {
+          if (!line.startsWith('data: ')) continue;
+          try {
+            const event = JSON.parse(line.substring(6));
+            handlePublishEvent(event);
+          } catch (e) {
+            console.error('Ошибка парсинга SSE события:', e);
+          }
+        }
+      }
+    } catch (err: any) {
+      console.error(err);
+      setPublishingLogs(prev => [
+        ...prev,
+        {
+          id: `err-${Date.now()}`,
+          time: new Date().toLocaleTimeString(),
+          type: 'error',
+          message: `Глобальный сбой публикации: ${err.message || 'Неизвестная ошибка'}`
+        }
+      ]);
+      setPublishingStatusText('Сбой публикации');
+      setPublishingCompleted(true);
+    }
+  };
+
   const isManager = user?.role === 'manager';
 
   return (
@@ -710,6 +932,168 @@ export default function TemplatesTab() {
                 </div>
               </div>
 
+              {/* ПАНЕЛЬ ПАКЕТНОЙ ПУБЛИКАЦИИ И ИНЛАЙН-ПРОГРЕСС */}
+              <div className="relative z-10 space-y-4 mb-5">
+                {/* 1. Блок управления массовой публикацией */}
+                {selectedCreationTplIds.length > 0 && !publishing && (
+                  <motion.div
+                    initial={{ opacity: 0, y: -10 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    className="p-4 rounded-2xl bg-brand-cyan/5 border border-brand-cyan/20 flex flex-col md:flex-row items-center justify-between gap-4"
+                  >
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs text-slate-300 font-semibold">
+                        Выбрано шаблонов для публикации: <b className="text-brand-cyan font-bold">{selectedCreationTplIds.length} шт.</b>
+                      </span>
+                      <button
+                        onClick={() => setSelectedCreationTplIds([])}
+                        className="text-[10px] bg-white/5 hover:bg-white/10 text-slate-400 hover:text-white px-2 py-1 rounded-lg font-bold transition-all uppercase tracking-wider cursor-pointer"
+                      >
+                        Сбросить выбор
+                      </button>
+                    </div>
+
+                    <div className="flex flex-wrap items-center gap-3 w-full md:w-auto justify-end">
+                      <div className="flex items-center gap-1.5 shrink-0">
+                        <span className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">На аккаунт:</span>
+                        <select
+                          value={batchTargetAccountId || ''}
+                          onChange={(e) => setBatchTargetAccountId(Number(e.target.value))}
+                          className="bg-slate-950/60 border border-white/5 rounded-xl py-1.5 px-3 text-xs text-white focus:outline-none focus:border-brand-cyan/40 font-semibold"
+                        >
+                          {accounts.map((acc) => (
+                            <option key={acc.id} value={acc.id}>
+                              {acc.name}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+
+                      <button
+                        onClick={handleStartBatchPublish}
+                        disabled={!batchTargetAccountId}
+                        className="py-2 px-4 bg-brand-cyan hover:bg-brand-cyan/95 text-slate-950 text-xs font-bold rounded-xl transition-all flex items-center gap-1.5 shadow-lg shadow-brand-cyan/10 cursor-pointer shrink-0 border border-brand-cyan/20"
+                      >
+                        <Play className="w-3.5 h-3.5 fill-current" />
+                        <span>Опубликовать на аккаунт</span>
+                      </button>
+                    </div>
+                  </motion.div>
+                )}
+
+                {/* 2. Блок прогресса SSE пакетной публикации */}
+                {publishing && (
+                  <motion.div
+                    initial={{ opacity: 0, scale: 0.98 }}
+                    animate={{ opacity: 1, scale: 1 }}
+                    className="p-5 rounded-3xl bg-slate-950/40 border border-white/5 space-y-4"
+                  >
+                    {/* Шапка прогресса */}
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-white/5 pb-3">
+                      <div className="flex items-center gap-2">
+                        {publishCompleted ? (
+                          <CheckCircle2 className="w-5 h-5 text-emerald-400 shrink-0" />
+                        ) : (
+                          <Loader2 className="w-5 h-5 text-brand-cyan animate-spin shrink-0" />
+                        )}
+                        <div className="space-y-0.5">
+                          <h4 className="text-xs font-bold text-white uppercase tracking-wider">
+                            {publishCompleted ? 'Массовая публикация завершена' : 'Идет пакетная публикация...'}
+                          </h4>
+                          <p className="text-[10px] text-slate-400 font-semibold truncate max-w-[300px] sm:max-w-none">
+                            {publishStatusText}
+                          </p>
+                        </div>
+                      </div>
+
+                      {/* Статистика */}
+                      <div className="flex items-center gap-2.5">
+                        <span className="text-[10px] bg-slate-500/10 border border-slate-500/15 text-slate-400 px-2.5 py-1 rounded-full font-bold">
+                          ВСЕГО: {publishStats.total}
+                        </span>
+                        <span className="text-[10px] bg-emerald-500/10 border border-emerald-500/15 text-emerald-400 px-2.5 py-1 rounded-full font-bold">
+                          УСПЕХ: {publishStats.success}
+                        </span>
+                        {publishStats.failed > 0 && (
+                          <span className="text-[10px] bg-red-500/10 border border-red-500/15 text-red-400 px-2.5 py-1 rounded-full font-bold">
+                            ОШИБОК: {publishStats.failed}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Прогресс-бар с анимацией */}
+                    <div className="space-y-1.5">
+                      <div className="flex items-center justify-between text-[10px] font-bold text-slate-400 uppercase tracking-wider">
+                        <span>Прогресс выполнения</span>
+                        <span className="text-brand-cyan">{publishProgress}%</span>
+                      </div>
+                      <div className="h-2 w-full bg-slate-950/80 rounded-full overflow-hidden border border-white/5 relative">
+                        <motion.div
+                          initial={{ width: 0 }}
+                          animate={{ width: `${publishProgress}%` }}
+                          transition={{ duration: 0.3 }}
+                          className="h-full bg-gradient-to-r from-brand-cyan/50 via-brand-cyan to-emerald-400 rounded-full shadow-[0_0_12px_rgba(6,182,212,0.4)]"
+                        />
+                      </div>
+                    </div>
+
+                    {/* Кнопки управления */}
+                    <div className="flex items-center justify-between">
+                      <button
+                        onClick={() => setShowPublishLogs(!showPublishLogs)}
+                        className="text-[10px] font-bold text-slate-400 hover:text-white uppercase tracking-wider flex items-center gap-1.5 cursor-pointer transition-colors"
+                      >
+                        <span>{showPublishLogs ? 'Скрыть подробности' : 'Показать подробности'}</span>
+                        {showPublishLogs ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+                      </button>
+
+                      {publishCompleted && (
+                        <button
+                          onClick={() => {
+                            setPublishing(false);
+                            setPublishingCompleted(false);
+                          }}
+                          className="py-1 px-3 bg-white/5 border border-white/5 hover:bg-white/10 text-slate-300 hover:text-white text-[10px] font-bold uppercase tracking-wider rounded-lg transition-all cursor-pointer"
+                        >
+                          Закрыть прогресс-бар
+                        </button>
+                      )}
+                    </div>
+
+                    {/* Логи событий */}
+                    <AnimatePresence>
+                      {showPublishLogs && (
+                        <motion.div
+                          initial={{ height: 0, opacity: 0 }}
+                          animate={{ height: 'auto', opacity: 1 }}
+                          exit={{ height: 0, opacity: 0 }}
+                          className="overflow-hidden border-t border-white/5 pt-3.5"
+                        >
+                          <div className="max-h-44 overflow-y-auto pr-1 no-scrollbar space-y-2 text-[11px] font-semibold font-mono">
+                            {publishLogs.map((log) => (
+                              <div
+                                key={log.id}
+                                className={`p-2 rounded-xl border flex items-start gap-2.5 leading-relaxed ${
+                                  log.type === 'success'
+                                    ? 'bg-emerald-500/5 border-emerald-500/10 text-emerald-400'
+                                    : log.type === 'error'
+                                    ? 'bg-red-500/5 border-red-500/10 text-red-400'
+                                    : 'bg-slate-950/30 border-white/5 text-slate-300'
+                                }`}
+                              >
+                                <span className="text-slate-500 shrink-0 font-bold">[{log.time}]</span>
+                                <span className="flex-1 whitespace-pre-wrap">{log.message}</span>
+                              </div>
+                            ))}
+                          </div>
+                        </motion.div>
+                      )}
+                    </AnimatePresence>
+                  </motion.div>
+                )}
+              </div>
+
               {/* СПИСОК ШАБЛОНОВ ПУБЛИКАЦИИ, СГРУППИРОВАННЫХ ПО ИГРАМ */}
               <div className="space-y-6 relative z-10 max-h-[600px] overflow-y-auto pr-1 no-scrollbar text-xs">
                 {creationLoading && creationTemplates.length === 0 ? (
@@ -732,6 +1116,8 @@ export default function TemplatesTab() {
 
                     return Object.keys(grouped).map((gameName) => {
                       const tpls = grouped[gameName];
+                      const allGroupSelected = tpls.map(t => t.id).every(id => selectedCreationTplIds.includes(id));
+
                       return (
                         <div key={gameName} className="rounded-2xl border border-white/5 bg-slate-950/25 overflow-hidden">
                           {/* Шапка группы/игры */}
@@ -743,58 +1129,99 @@ export default function TemplatesTab() {
                                 {tpls.length} шт.
                               </span>
                             </div>
+                            {!isManager && (
+                              <button
+                                onClick={() => {
+                                  const tplIds = tpls.map(t => t.id);
+                                  if (allGroupSelected) {
+                                    // Снимаем выбор с шаблонов этой группы
+                                    setSelectedCreationTplIds(prev => prev.filter(id => !tplIds.includes(id)));
+                                  } else {
+                                    // Выбираем все шаблоны этой группы (избегая дублирования)
+                                    setSelectedCreationTplIds(prev => {
+                                      const unique = new Set([...prev, ...tplIds]);
+                                      return Array.from(unique);
+                                    });
+                                  }
+                                }}
+                                className="text-[10px] text-brand-cyan hover:text-brand-cyan/80 font-bold uppercase tracking-wider transition-colors cursor-pointer"
+                              >
+                                {allGroupSelected ? 'Сбросить все' : 'Выбрать все'}
+                              </button>
+                            )}
                           </div>
 
                           {/* Элементы внутри игры */}
                           <div className="divide-y divide-white/5 p-4 space-y-4">
-                            {tpls.map((tpl) => (
-                              <div key={tpl.id} className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 last:pb-0 border-b border-white/5 last:border-0 pb-4">
-                                <div className="space-y-1">
-                                  <div className="flex items-center gap-2">
-                                    <span className="text-xs font-bold text-white">{tpl.name}</span>
-                                    <span className="text-[9px] bg-brand-cyan/10 border border-brand-cyan/20 text-brand-cyan px-2 py-0.5 rounded-full font-semibold uppercase">
-                                      {tpl.subcategory_name}
-                                    </span>
+                            {tpls.map((tpl) => {
+                              const isSelected = selectedCreationTplIds.includes(tpl.id);
+                              return (
+                                <div key={tpl.id} className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 last:pb-0 border-b border-white/5 last:border-0 pb-4">
+                                  <div className="flex items-center gap-3 flex-1 min-w-0">
+                                    {!isManager && (
+                                      <button
+                                        onClick={() => {
+                                          setSelectedCreationTplIds(prev => 
+                                            prev.includes(tpl.id) ? prev.filter(id => id !== tpl.id) : [...prev, tpl.id]
+                                          );
+                                        }}
+                                        className="p-1 text-slate-400 hover:text-white transition-colors cursor-pointer shrink-0"
+                                      >
+                                        {isSelected ? (
+                                          <CheckSquare className="w-4.5 h-4.5 text-brand-cyan" />
+                                        ) : (
+                                          <Square className="w-4.5 h-4.5 text-slate-600 hover:text-slate-400" />
+                                        )}
+                                      </button>
+                                    )}
+                                    <div className="space-y-1 flex-1 min-w-0">
+                                      <div className="flex items-center gap-2">
+                                        <span className="text-xs font-bold text-white">{tpl.name}</span>
+                                        <span className="text-[9px] bg-brand-cyan/10 border border-brand-cyan/20 text-brand-cyan px-2 py-0.5 rounded-full font-semibold uppercase">
+                                          {tpl.subcategory_name}
+                                        </span>
+                                      </div>
+                                      
+                                      {/* Выводим часть заполненных полей для наглядности */}
+                                      <div className="flex flex-wrap gap-x-4 gap-y-1 text-[10px] text-slate-400 font-semibold tracking-wide">
+                                        {tpl.fields && tpl.fields['price'] && (
+                                          <span>Цена: <b className="text-white">{tpl.fields['price']} ₽</b></span>
+                                        )}
+                                        {tpl.fields && tpl.fields['amount'] && (
+                                          <span>Наличие: <b className="text-white">{tpl.fields['amount']} шт.</b></span>
+                                        )}
+                                        {tpl.fields && tpl.fields['fields[summary][ru]'] && (
+                                          <span className="truncate max-w-[250px]" title={tpl.fields['fields[summary][ru]']}>
+                                            Описание: <i className="text-slate-300 font-normal">"{tpl.fields['fields[summary][ru]']}"</i>
+                                          </span>
+                                        )}
+                                      </div>
+                                    </div>
                                   </div>
-                                  
-                                  {/* Выводим часть заполненных полей для наглядности */}
-                                  <div className="flex flex-wrap gap-x-4 gap-y-1 text-[10px] text-slate-400 font-semibold tracking-wide">
-                                    {tpl.fields && tpl.fields['price'] && (
-                                      <span>Цена: <b className="text-white">{tpl.fields['price']} ₽</b></span>
-                                    )}
-                                    {tpl.fields && tpl.fields['amount'] && (
-                                      <span>Наличие: <b className="text-white">{tpl.fields['amount']} шт.</b></span>
-                                    )}
-                                    {tpl.fields && tpl.fields['fields[summary][ru]'] && (
-                                      <span className="truncate max-w-[250px]" title={tpl.fields['fields[summary][ru]']}>
-                                        Описание: <i className="text-slate-300 font-normal">"{tpl.fields['fields[summary][ru]']}"</i>
-                                      </span>
-                                    )}
-                                  </div>
-                                </div>
 
-                                <div className="flex items-center gap-2 self-end sm:self-auto shrink-0">
-                                  {!isManager && (
-                                    <>
-                                      <button
-                                        onClick={() => handleStartEditCreationTemplate(tpl)}
-                                        className="p-1.5 bg-white/5 border border-white/5 hover:text-white text-slate-400 rounded-lg transition-colors cursor-pointer"
-                                        title="Редактировать шаблон"
-                                      >
-                                        <Edit2 className="w-3.5 h-3.5" />
-                                      </button>
-                                      <button
-                                        onClick={() => handleDeleteCreationTemplate(tpl.id)}
-                                        className="p-1.5 bg-red-500/10 hover:bg-red-500/25 border border-transparent hover:border-red-500/15 text-red-400 rounded-lg transition-colors cursor-pointer"
-                                        title="Удалить шаблон"
-                                      >
-                                        <Trash2 className="w-3.5 h-3.5" />
-                                      </button>
-                                    </>
-                                  )}
+                                  <div className="flex items-center gap-2 self-end sm:self-auto shrink-0">
+                                    {!isManager && (
+                                      <>
+                                        <button
+                                          onClick={() => handleStartEditCreationTemplate(tpl)}
+                                          className="p-1.5 bg-white/5 border border-white/5 hover:text-white text-slate-400 rounded-lg transition-colors cursor-pointer"
+                                          title="Редактировать шаблон"
+                                        >
+                                          <Edit2 className="w-3.5 h-3.5" />
+                                        </button>
+                                        <button
+                                          onClick={() => handleDeleteCreationTemplate(tpl.id)}
+                                          className="p-1.5 bg-red-500/10 hover:bg-red-500/25 border border-transparent hover:border-red-500/15 text-red-400 rounded-lg transition-colors cursor-pointer"
+                                          title="Удалить шаблон"
+                                        >
+                                          <Trash2 className="w-3.5 h-3.5" />
+                                        </button>
+                                      </>
+                                    )}
+                                  </div>
                                 </div>
-                              </div>
-                            ))}
+                              );
+                            })}
                           </div>
                         </div>
                       );

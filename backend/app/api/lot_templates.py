@@ -71,6 +71,11 @@ class LotCreationTemplateResponse(BaseModel):
         from_attributes = True
 
 
+class PublishBatchPayload(BaseModel):
+    account_id: int
+    template_ids: List[int]
+
+
 def get_owner_id(user: User) -> int:
     """Возвращает ID владельца организации (для получения общих шаблонов)."""
     if user.role == UserRole.MANAGER and user.parent_id:
@@ -320,4 +325,155 @@ async def get_creation_template_form_fields(
     if not details:
         raise HTTPException(status_code=400, detail="Не удалось загрузить структуру полей с Funpay.")
     return details
+
+
+@router.post("/creation/publish-batch")
+async def publish_templates_batch(
+    payload: PublishBatchPayload,
+    db: AsyncSession = Depends(get_session),
+    current_user: User = Depends(get_current_user)
+) -> Any:
+    """Массовая публикация лотов на выбранный аккаунт по шаблонам с SSE стримингом прогресса."""
+    from fastapi.responses import StreamingResponse
+    import json
+    import asyncio
+
+    # 1. Проверяем доступ к аккаунту
+    await verify_account_access(db, current_user, payload.account_id)
+
+    # 2. Получаем аккаунт
+    account = await db.get(FanpayAccount, payload.account_id)
+    if not account:
+        raise HTTPException(status_code=404, detail="Аккаунт не найден")
+
+    if not account.cookies:
+        raise HTTPException(status_code=400, detail="Сначала верифицируйте сессию выбранного аккаунта.")
+
+    # 3. До запуска генератора выгружаем ВСЕ шаблоны из БД во избежание проблем с сессией внутри SSE
+    owner_id = get_owner_id(current_user)
+    query = select(LotCreationTemplate).where(
+        LotCreationTemplate.id.in_(payload.template_ids),
+        LotCreationTemplate.user_id == owner_id
+    )
+    res = await db.execute(query)
+    templates = res.scalars().all()
+
+    if not templates:
+        raise HTTPException(status_code=400, detail="Не найден ни один из указанных шаблонов.")
+
+    # Сохраняем во временную структуру, чтобы не зависеть от БД в цикле стрима
+    templates_data = [
+        {
+            "id": t.id,
+            "name": t.name,
+            "node_id": t.node_id,
+            "fields": t.fields,
+            "game_name": t.game_name,
+            "subcategory_name": t.subcategory_name
+        }
+        for t in templates
+    ]
+
+    # Сортируем шаблоны в порядке, в котором их передал пользователь
+    tpl_map = {t["id"]: t for t in templates_data}
+    sorted_templates = [tpl_map[tid] for tid in payload.template_ids if tid in tpl_map]
+
+    # 4. Создаем инстанс FanpayClient
+    from app.services.fanpay_client import FanpayClient
+    client = FanpayClient(
+        golden_key=account.golden_key,
+        proxy_url=account.proxy_url,
+        user_agent=account.user_agent,
+        cookies=account.cookies
+    )
+
+    async def event_generator():
+        total = len(sorted_templates)
+        success_count = 0
+        failed_count = 0
+
+        # Отправляем событие инициализации
+        init_event = {"type": "init", "total": total}
+        yield f"data: {json.dumps(init_event, ensure_ascii=False)}\n\n"
+        await asyncio.sleep(0.1)
+
+        for idx, tpl in enumerate(sorted_templates):
+            # Отправляем событие старта публикации текущего шаблона
+            start_event = {
+                "type": "template_start",
+                "template_id": tpl["id"],
+                "template_name": tpl["name"],
+                "game_name": tpl["game_name"],
+                "subcategory_name": tpl["subcategory_name"],
+                "current": idx + 1,
+                "total": total
+            }
+            yield f"data: {json.dumps(start_event, ensure_ascii=False)}\n\n"
+            await asyncio.sleep(0.1)
+
+            try:
+                # Публикуем лот на FunPay
+                success, message = await client.create_lot(tpl["node_id"], tpl["fields"])
+                if success:
+                    success_count += 1
+                    status_event = {
+                        "type": "success",
+                        "template_id": tpl["id"],
+                        "template_name": tpl["name"],
+                        "message": message
+                    }
+                else:
+                    failed_count += 1
+                    status_event = {
+                        "type": "error",
+                        "template_id": tpl["id"],
+                        "template_name": tpl["name"],
+                        "message": message
+                    }
+            except Exception as e:
+                failed_count += 1
+                status_event = {
+                    "type": "error",
+                    "template_id": tpl["id"],
+                    "template_name": tpl["name"],
+                    "message": f"Ошибка сети / исключение: {str(e)}"
+                }
+
+            yield f"data: {json.dumps(status_event, ensure_ascii=False)}\n\n"
+
+            # Небольшая пауза между публикациями для безопасности от бот-детекторов
+            if idx < total - 1:
+                await asyncio.sleep(1.5)
+
+        # 5. В самом конце запускаем ОДНОКРАТНУЮ синхронизацию кэша лотов
+        sync_start_event = {"type": "sync_start"}
+        yield f"data: {json.dumps(sync_start_event, ensure_ascii=False)}\n\n"
+        await asyncio.sleep(0.1)
+
+        try:
+            lots = await client.get_active_lots()
+            if lots is not None:
+                account.lots_cache = lots
+                account.last_synced = datetime.utcnow()
+                db.add(account)
+                await db.commit()
+                sync_success_event = {"type": "sync_success"}
+            else:
+                sync_success_event = {"type": "sync_error", "message": "Не удалось обновить кэш лотов с FunPay."}
+        except Exception as sync_err:
+            sync_success_event = {"type": "sync_error", "message": f"Ошибка записи кэша: {str(sync_err)}"}
+
+        yield f"data: {json.dumps(sync_success_event, ensure_ascii=False)}\n\n"
+        await asyncio.sleep(0.1)
+
+        # Отправляем финальное событие завершения
+        done_event = {
+            "type": "done",
+            "total": total,
+            "success_count": success_count,
+            "failed_count": failed_count
+        }
+        yield f"data: {json.dumps(done_event, ensure_ascii=False)}\n\n"
+
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
 
