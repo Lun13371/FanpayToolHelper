@@ -352,7 +352,7 @@ def parse_dialogs_list(html: str) -> List[Dict[str, Any]]:
         if not node_id:
             continue
 
-        name_el = item.find(class_=re.compile(r"contact-item-name|media-heading", re.I))
+        name_el = item.find(class_=re.compile(r"media-user-name|contact-item-name|media-heading|user-link-name", re.I))
         username = name_el.text.strip() if name_el else "Пользователь"
 
         avatar_el = item.find(class_=re.compile(r"avatar|contact-item-avatar", re.I))
@@ -363,7 +363,7 @@ def parse_dialogs_list(html: str) -> List[Dict[str, Any]]:
             if url_match:
                 avatar_url = url_match.group(1)
         
-        msg_el = item.find(class_=re.compile(r"contact-item-msg|contact-item-text", re.I))
+        msg_el = item.find(class_=re.compile(r"contact-item-msg|contact-item-text|contact-item-message", re.I))
         last_message = msg_el.text.strip() if msg_el else ""
         last_message = re.sub(r'\s+', ' ', last_message)
 
@@ -394,28 +394,101 @@ def parse_chat_messages_history(html: str) -> List[Dict[str, Any]]:
     Разбирает историю сообщений конкретного чата по полученному HTML.
     """
     soup = BeautifulSoup(html, "html.parser")
-    msg_blocks = soup.find_all(class_=re.compile(r"chat-msg", re.I))
+    
+    # Извлекаем наш userId и никнейм для точного определения отправителя (is_me)
+    my_user_id = None
+    my_username = None
+    
+    body = soup.find("body")
+    if body and body.has_attr("data-app-data"):
+        try:
+            app_data = json.loads(body.get("data-app-data"))
+            if "userId" in app_data:
+                my_user_id = str(app_data["userId"])
+        except:
+            pass
+            
+    user_link = soup.find("a", class_="user-link-dropdown")
+    if user_link:
+        name_div = user_link.find(class_="user-link-name")
+        if name_div:
+            my_username = name_div.text.strip().lower()
+            
+        href = user_link.get("href", "")
+        id_match = re.search(r"/users/(\d+)/", href)
+        if id_match and not my_user_id:
+            my_user_id = id_match.group(1)
+
+    # Важно: выбираем ТОЛЬКО внешние блоки .chat-msg-item, чтобы исключить дублирование
+    msg_blocks = soup.find_all("div", class_=re.compile(r"chat-msg-item", re.I))
     messages = []
     
+    last_author = "Система"
+    last_is_me = False
+    
     for msg in msg_blocks:
-        author_div = msg.find(class_=re.compile(r"chat-msg-author", re.I))
-        author = author_div.text.strip() if author_div else "Система"
-        
+        author_div = msg.find(class_=re.compile(r"chat-msg-author|media-user-name", re.I))
+        if author_div:
+            # Очищаем имя от лишних переносов, дат и лейблов (например, "оповещение", "28.05.26")
+            author_link = author_div.find("a", class_="chat-msg-author-link")
+            if author_link:
+                author = author_link.text.strip()
+            else:
+                author_text = author_div.get_text(" ", strip=True)
+                words = []
+                for w in author_text.split():
+                    if w.lower() in ["оповещение", "поддержка"] or re.match(r"^\d{2}\.\d{2}", w):
+                        break
+                    words.append(w)
+                author = " ".join(words).strip() if words else "Система"
+            last_author = author
+            
+            # Определяем, наше ли это сообщение
+            author_link_el = msg.find("a", class_="chat-msg-author-link")
+            is_me = False
+            if author_link_el:
+                href = author_link_el.get("href", "")
+                if my_user_id and f"/users/{my_user_id}/" in href:
+                    is_me = True
+                elif my_username and author_link_el.text.strip().lower() == my_username:
+                    is_me = True
+            elif author.lower() in ["я", "вы"]:
+                is_me = True
+            last_is_me = is_me
+        else:
+            author = last_author
+            is_me = last_is_me
+            
         text_div = msg.find(class_=re.compile(r"chat-msg-text", re.I))
         if not text_div:
             continue
-        text = text_div.text.strip()
-
+            
+        # Извлекаем внутренний HTML для сохранения форматирования (ссылки, жирность)
+        text_html = "".join([str(x) for x in text_div.contents]).strip()
+        
+        # Очищаем текст от невидимых технических символов ботов (маркеры защиты от циклов)
+        for char in ["\u2061", "\u200b", "\u200d", "\u200c"]:
+            text_html = text_html.replace(char, "")
+            
+        # Превращаем относительные ссылки FunPay в абсолютные
+        text_html = text_html.replace('href="/', 'href="https://funpay.com/')
+        text_html = text_html.replace("href='/", "href='https://funpay.com/")
+        # Настраиваем открытие ссылок в новой вкладке
+        text_html = text_html.replace('<a ', '<a target="_blank" rel="noopener noreferrer" ')
+        
         time_div = msg.find(class_=re.compile(r"chat-msg-date|chat-msg-time", re.I))
         time_str = time_div.text.strip() if time_div else ""
 
-        is_me = "chat-msg-mine" in msg.get("class", []) or author.lower() in ["я", "вы"]
-        
+        is_system = False
+        if msg.find(class_=re.compile(r"alert", re.I)) or author.lower() in ["оповещение", "система"]:
+            is_system = True
+
         messages.append({
             "author": author,
-            "text": text,
+            "text": text_html,
             "is_me": is_me,
-            "time": time_str
+            "time": time_str,
+            "is_system": is_system
         })
         
     return messages

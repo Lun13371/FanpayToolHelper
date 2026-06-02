@@ -84,11 +84,41 @@ class RetryingAsyncClient(httpx.AsyncClient):
             self.last_request_time = time.time()
         return response
 
+class PersistentClientWrapper:
+    """
+    Контекстный менеджер-обертка для повторно используемого (Keep-Alive) HTTP-клиента.
+    Предотвращает RuntimeError: Cannot enter client twice при параллельных запросах.
+    """
+    def __init__(self, client: httpx.AsyncClient):
+        self.client = client
+        
+    async def __aenter__(self) -> httpx.AsyncClient:
+        return self.client
+        
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        pass
+
 class FanpayClient:
     """
     Низкоуровневый клиент для взаимодействия с API и веб-версией Funpay.
     Использует HTTPX для асинхронных запросов через резидентные прокси и с куками пользователя.
     """
+    _instances = {}  # Кэш синглтон-инстансов (golden_key -> FanpayClient)
+    _csrf_cache = {}  # Кэш CSRF-токенов в оперативной памяти (golden_key -> csrf_token)
+    _client_sessions = {}  # Кэш активных сессий HTTPX (golden_key -> RetryingAsyncClient)
+
+    def __new__(cls, golden_key: str, proxy_url: str, user_agent: Optional[str] = None, cookies: Optional[Dict[str, Any]] = None):
+        if golden_key in cls._instances:
+            # Обновляем динамические параметры существующего синглтон-клиента
+            instance = cls._instances[golden_key]
+            instance.proxy_url = proxy_url
+            if user_agent:
+                instance.user_agent = user_agent
+            return instance
+            
+        instance = super().__new__(cls)
+        cls._instances[golden_key] = instance
+        return instance
 
     def __init__(
         self, 
@@ -97,6 +127,9 @@ class FanpayClient:
         user_agent: Optional[str] = None,
         cookies: Optional[Dict[str, Any]] = None
     ):
+        if hasattr(self, "_initialized"):
+            return
+            
         self.golden_key = golden_key
         self.proxy_url = proxy_url
         self.user_agent = user_agent or "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:125.0) Gecko/20100101 Firefox/125.0"
@@ -104,6 +137,9 @@ class FanpayClient:
         
         # Обязательно вшиваем golden_key в куки
         self.cookies["golden_key"] = golden_key
+        
+        self.csrf_token = None
+        self._initialized = True
 
     def _get_aligned_headers(self) -> Dict[str, str]:
         """
@@ -187,34 +223,44 @@ class FanpayClient:
 
         return headers
 
-    def _get_client(self) -> httpx.AsyncClient:
+    def _get_client(self) -> Any:
         """
-        Создает асинхронный HTTP-клиент с настроенными заголовками, прокси и куками.
+        Возвращает повторно используемый асинхронный HTTP-клиент (Keep-Alive), обернутый в безопасный контекст.
         """
-        # Настройка прокси (SOCKS5/HTTP)
-        proxy = self.proxy_url if self.proxy_url else None
+        client = FanpayClient._client_sessions.get(self.golden_key)
+        
+        # Если клиент отсутствует или был принудительно закрыт, инициализируем новый
+        if not client or client.is_closed:
+            # Настройка прокси (SOCKS5/HTTP)
+            proxy = self.proxy_url if self.proxy_url else None
 
-        # Получаем легитимный набор заголовков на основе User-Agent
-        headers = self._get_aligned_headers()
+            # Получаем легитимный набор заголовков на основе User-Agent
+            headers = self._get_aligned_headers()
 
-        # Конвертируем все значения кук в строки для HTTPX
-        cleaned_cookies = {k: str(v) for k, v in self.cookies.items()}
-        # Вшиваем cookie_prefs: "1" для не-API запросов к страницам Funpay
-        cleaned_cookies["cookie_prefs"] = "1"
+            # Исключаем устаревший PHPSESSID из кук БД при инициализации, чтобы FunPay выдал свежую валидную сессию
+            cleaned_cookies = {k: str(v) for k, v in self.cookies.items() if k != "PHPSESSID"}
+            # Вшиваем cookie_prefs: "1" для не-API запросов к страницам Funpay
+            cleaned_cookies["cookie_prefs"] = "1"
 
-        return RetryingAsyncClient(
-            proxy=proxy,
-            headers=headers,
-            cookies=cleaned_cookies,
-            timeout=25.0,
-            follow_redirects=True
-        )
+            client = RetryingAsyncClient(
+                proxy=proxy,
+                headers=headers,
+                cookies=cleaned_cookies,
+                timeout=25.0,
+                follow_redirects=True
+            )
+            FanpayClient._client_sessions[self.golden_key] = client
+            
+        return PersistentClientWrapper(client)
 
     def _extract_csrf_token(self, html: str) -> Optional[str]:
         """
-        Извлекает CSRF-токен из HTML.
+        Извлекает CSRF-токен из HTML и кэширует его для повторного использования.
         """
-        return extract_csrf_token(html)
+        csrf = extract_csrf_token(html)
+        if csrf:
+            FanpayClient._csrf_cache[self.golden_key] = csrf
+        return csrf
 
     async def get_connection_ip_and_geo(self) -> Tuple[Optional[str], Optional[str]]:
         """
@@ -510,47 +556,80 @@ class FanpayClient:
 
     async def send_message(self, node_id: str, text: str) -> bool:
         """
-        Отправляет текстовое сообщение в чат с указанным node_id.
+        Отправляет текстовое сообщение в чат с указанным node_id через официальный runner API.
+        Использует кэшированный CSRF токен для исключения лишних GET-запросов и ускорения работы.
         """
         async with self._get_client() as client:
             try:
-                # Сначала нам нужно зайти в чат или на любую страницу, чтобы получить актуальный CSRF
-                # Или мы можем получить CSRF прямо из первого запроса, так как он обычно кэширован в сессии
-                chat_url = f"https://funpay.com/chat/?node={node_id}"
-                response = await client.get(chat_url)
-                if response.status_code != 200:
-                    return False
-
-                csrf_token = self._extract_csrf_token(response.text)
+                # 1. Пытаемся получить CSRF токен из кэша в оперативной памяти
+                csrf_token = FanpayClient._csrf_cache.get(self.golden_key)
+                
+                # Если токена нет в кэше, загружаем чат и кэшируем его
+                if not csrf_token:
+                    chat_url = f"https://funpay.com/chat/?node={node_id}"
+                    response = await client.get(chat_url)
+                    if response.status_code == 200:
+                        csrf_token = self._extract_csrf_token(response.text)
+                
                 if not csrf_token:
                     logger.error(f"Не удалось извлечь CSRF токен для отправки сообщения в ноду {node_id}")
                     return False
 
-                # POST запрос на отправку сообщения
-                send_url = "https://funpay.com/chat/message" if "message" in response.text else "https://funpay.com/chat/"
-                
-                # На Funpay отправка сообщения обычно идет POST запросом на /chat/
-                # с параметрами node, content, csrf_token
+                # Формируем запрос к официальному эндпоинту runner/ (как в FunPay Cardinal)
                 payload = {
-                    "node": node_id,
-                    "content": text,
-                    "csrf_token": csrf_token
+                    "csrf_token": csrf_token,
+                    "objects": "[]",
+                    "request": json.dumps({
+                        "action": "chat_message",
+                        "data": {
+                            "node": int(node_id),
+                            "last_message": -1,
+                            "content": text
+                        }
+                    }, ensure_ascii=False)
                 }
                 headers = {
                     "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
                     "X-Requested-With": "XMLHttpRequest"
                 }
 
-                res = await client.post("https://funpay.com/chat/", data=payload, headers=headers)
+                res = await client.post("https://funpay.com/runner/", data=payload, headers=headers)
+                logger.info(f"Runner response for node {node_id}: code={res.status_code}, text={res.text}")
+                
+                # Если вернуло 400 или ошибку устаревшего CSRF токена / сессии
+                if res.status_code == 400 or "обновите страницу" in res.text.lower() or "csrf" in res.text.lower() or "token" in res.text.lower():
+                    logger.warning("Обнаружена ошибка сессии или устаревший CSRF. Полностью сбрасываем кэш и пробуем снова с чистым GET-запросом...")
+                    FanpayClient._csrf_cache.pop(self.golden_key, None)
+                    FanpayClient._client_sessions.pop(self.golden_key, None)
+                    # Вызываем рекурсивный повтор отправки (он создаст абсолютно чистую сессию и новый CSRF токен)
+                    return await self.send_message(node_id, text)
+
                 if res.status_code == 200:
+                    try:
+                        res_json = res.json()
+                        # Извлекаем и проверяем ошибки доставки или флуд-лимиты
+                        error_msg = res_json.get("error") or (res_json.get("response") and res_json["response"].get("error"))
+                        if error_msg:
+                            logger.error(f"Ошибка доставки сообщения FunPay (флуд-лимит или блокировка): {error_msg}")
+                            return False
+
+                        # Если все успешно во внутреннем блоке ответа
+                        if not res_json.get("error") and (not res_json.get("response") or not res_json["response"].get("error")):
+                            return True
+                    except Exception:
+                        if "error" not in res.text or '"error":null' in res.text:
+                            return True
                     return True
                 
-                # Попробуем альтернативный эндпоинт, если основной дал сбой
-                res_alt = await client.post("https://funpay.com/chat/message", data=payload, headers=headers)
-                return res_alt.status_code == 200
+                # Если вернуло ошибку, очистим кэш
+                FanpayClient._csrf_cache.pop(self.golden_key, None)
+                FanpayClient._client_sessions.pop(self.golden_key, None)
+                return False
 
             except Exception as e:
                 logger.error(f"Исключение при отправке сообщения в ноду {node_id}: {str(e)}")
+                FanpayClient._csrf_cache.pop(self.golden_key, None)
+                FanpayClient._client_sessions.pop(self.golden_key, None)
                 return False
 
     async def update_lot_price(self, lot_id: str, new_price: float) -> bool:
@@ -762,6 +841,9 @@ class FanpayClient:
                 if response.status_code != 200:
                     logger.error(f"Не удалось открыть чат {node_id}. Код: {response.status_code}")
                     return []
+
+                # Обновляем CSRF-токен нашего синглтон-инстанса при каждом чтении переписки
+                self._extract_csrf_token(response.text)
 
                 return parse_chat_messages_history(response.text)
             except Exception as e:

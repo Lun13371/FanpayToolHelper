@@ -20,6 +20,7 @@ interface ChatMessage {
   text: string;
   is_me: boolean;
   time: string;
+  is_system?: boolean;
 }
 
 export default function ChatsSubTab() {
@@ -35,32 +36,37 @@ export default function ChatsSubTab() {
   const [sendingReply, setSendingReply] = useState(false);
   const chatEndRef = useRef<HTMLDivElement>(null);
 
+  // Ссылки-блокировщики параллельных запросов во избежание Cloudflare Rate Limit и таймаутов
+  const chatsLoadingRef = useRef(false);
+  const messagesLoadingRef = useRef(false);
+
   // Эффект автоматической прокрутки чата вниз при новых сообщениях
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
-  // Авто-поллинг мессенджера
+  // Авто-поллинг мессенджера (каждые 30 секунд для снижения нагрузки на сессию)
   useEffect(() => {
     if (selectedAccountId && token) {
       fetchChats();
-      const interval = setInterval(fetchChats, 7000);
+      const interval = setInterval(fetchChats, 30000);
       return () => clearInterval(interval);
     }
   }, [selectedAccountId, token]);
 
-  // Авто-поллиринг переписки активного чата
+  // Авто-поллиринг переписки активного чата (каждые 12 секунд для легкой фоновой синхронизации)
   useEffect(() => {
     if (selectedAccountId && token && activeNodeId) {
       fetchMessages(activeNodeId);
-      const interval = setInterval(() => fetchMessages(activeNodeId), 3500);
+      const interval = setInterval(() => fetchMessages(activeNodeId), 12000);
       return () => clearInterval(interval);
     }
   }, [selectedAccountId, token, activeNodeId]);
 
   // Мессенджер: получение списка чатов
   const fetchChats = async () => {
-    if (!selectedAccountId) return;
+    if (!selectedAccountId || chatsLoadingRef.current) return;
+    chatsLoadingRef.current = true;
     setChatsLoading(true);
     try {
       const res = await fetch(`${API_URL}/api/v1/accounts/${selectedAccountId}/chats`, {
@@ -73,13 +79,15 @@ export default function ChatsSubTab() {
     } catch (err) {
       console.error(err);
     } finally {
+      chatsLoadingRef.current = false;
       setChatsLoading(false);
     }
   };
 
   // Мессенджер: получение переписки
   const fetchMessages = async (nodeId: string) => {
-    if (!selectedAccountId) return;
+    if (!selectedAccountId || messagesLoadingRef.current) return;
+    messagesLoadingRef.current = true;
     setMessagesLoading(true);
     try {
       const res = await fetch(`${API_URL}/api/v1/accounts/${selectedAccountId}/chats/${nodeId}/messages`, {
@@ -92,6 +100,7 @@ export default function ChatsSubTab() {
     } catch (err) {
       console.error(err);
     } finally {
+      messagesLoadingRef.current = false;
       setMessagesLoading(false);
     }
   };
@@ -100,7 +109,12 @@ export default function ChatsSubTab() {
   const handleSendMessage = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!selectedAccountId || !activeNodeId || !replyText.trim()) return;
+    
+    // Блокируем фоновые поллеры на время отправки, чтобы разгрузить сеть
+    messagesLoadingRef.current = true;
+    chatsLoadingRef.current = true;
     setSendingReply(true);
+    
     try {
       const res = await fetch(`${API_URL}/api/v1/accounts/${selectedAccountId}/chats/${activeNodeId}/send`, {
         method: 'POST',
@@ -112,6 +126,9 @@ export default function ChatsSubTab() {
       });
       if (res.ok) {
         setReplyText('');
+        // Снимаем блокировку для немедленного обновления переписки
+        messagesLoadingRef.current = false;
+        chatsLoadingRef.current = false;
         await fetchMessages(activeNodeId);
         fetchChats();
       } else {
@@ -121,6 +138,8 @@ export default function ChatsSubTab() {
     } catch {
       alert('Ошибка отправки');
     } finally {
+      messagesLoadingRef.current = false;
+      chatsLoadingRef.current = false;
       setSendingReply(false);
     }
   };
@@ -179,13 +198,31 @@ export default function ChatsSubTab() {
                 }`}
               >
                 <div className="w-10 h-10 rounded-xl bg-white/5 border border-white/5 shrink-0 overflow-hidden relative">
-                  {chat.avatar_url ? (
-                    <img src={chat.avatar_url} alt="Ava" className="w-full h-full object-cover animate-fade-in" />
-                  ) : (
-                    <div className="w-full h-full flex items-center justify-center text-xs font-bold text-slate-400 uppercase">
-                      {chat.username[0]}
-                    </div>
-                  )}
+                  {(() => {
+                    const hasValidAvatar = chat.avatar_url && 
+                                           chat.avatar_url.trim() !== '' && 
+                                           !chat.avatar_url.includes('avatar.png') && 
+                                           (chat.avatar_url.startsWith('http') || chat.avatar_url.startsWith('//'));
+                    return (
+                      <>
+                        {hasValidAvatar ? (
+                          <img 
+                            src={chat.avatar_url!.startsWith('//') ? `https:${chat.avatar_url}` : chat.avatar_url!} 
+                            alt="Ava" 
+                            className="w-full h-full object-cover animate-fade-in" 
+                            onError={(e) => {
+                              (e.target as HTMLImageElement).style.display = 'none';
+                              const fallback = (e.target as HTMLImageElement).parentElement?.querySelector('.avatar-fallback');
+                              if (fallback) fallback.classList.remove('hidden');
+                            }}
+                          />
+                        ) : null}
+                        <div className={`avatar-fallback w-full h-full flex items-center justify-center text-xs font-bold text-slate-400 uppercase bg-gradient-to-br from-slate-800 to-slate-900 ${hasValidAvatar ? 'hidden absolute inset-0' : ''}`}>
+                          {chat.username ? chat.username[0] : <User className="w-4 h-4 text-slate-500" />}
+                        </div>
+                      </>
+                    );
+                  })()}
                   {chat.is_unread && (
                     <span className="absolute -top-1 -right-1 w-3 h-3 bg-red-500 border-2 border-[#06070A] rounded-full" />
                   )}
@@ -246,21 +283,35 @@ export default function ChatsSubTab() {
               ) : messages.length === 0 ? (
                 <div className="text-center py-20 text-slate-500 text-xs">История сообщений пуста</div>
               ) : (
-                messages.map((msg, idx) => (
-                  <div 
-                    key={idx} 
-                    className={`flex flex-col max-w-[80%] ${msg.is_me ? 'ml-auto items-end' : 'mr-auto items-start'}`}
-                  >
-                    <div className={`p-3 rounded-2xl text-xs font-medium leading-relaxed shadow-sm ${
-                      msg.is_me 
-                        ? 'bg-brand-cyan text-slate-950 rounded-tr-none' 
-                        : 'bg-slate-950/40 border border-white/5 text-slate-200 rounded-tl-none'
-                    }`}>
-                      {msg.text}
+                messages.map((msg, idx) => {
+                  const isSystem = msg.is_system;
+                  return (
+                    <div 
+                      key={idx} 
+                      className={`flex flex-col ${isSystem ? 'w-full max-w-full items-center my-2' : `max-w-[80%] ${msg.is_me ? 'ml-auto items-end' : 'mr-auto items-start'}`}`}
+                    >
+                      {isSystem ? (
+                        <div 
+                          className="px-4 py-3 rounded-2xl text-[11px] leading-relaxed shadow-sm bg-blue-950/20 border border-blue-500/15 text-blue-300 w-full text-center font-normal"
+                          dangerouslySetInnerHTML={{ __html: msg.text }}
+                        />
+                      ) : (
+                        <div className={`p-3 rounded-2xl text-xs font-medium leading-relaxed shadow-sm ${
+                          msg.is_me 
+                            ? 'bg-brand-cyan text-slate-950 rounded-tr-none' 
+                            : 'bg-slate-950/40 border border-white/5 text-slate-200 rounded-tl-none'
+                        }`}>
+                          {msg.text}
+                        </div>
+                      )}
+                      {!isSystem && (
+                        <span className="text-[9px] text-slate-500 font-semibold mt-1 px-1">
+                          {msg.time ? `${msg.time} • ${msg.author}` : msg.author}
+                        </span>
+                      )}
                     </div>
-                    <span className="text-[9px] text-slate-500 font-semibold mt-1 px-1">{msg.time || msg.author}</span>
-                  </div>
-                ))
+                  );
+                })
               )}
               <div ref={chatEndRef} />
             </div>

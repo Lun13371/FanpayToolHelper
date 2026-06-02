@@ -26,6 +26,7 @@ class MessageResponse(BaseModel):
     text: str
     is_me: bool
     time: str
+    is_system: bool = False
 
 class MessageSend(BaseModel):
     text: str = Field(..., description="Текст сообщения для отправки")
