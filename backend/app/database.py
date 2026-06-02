@@ -40,6 +40,7 @@ async def init_db() -> None:
         from app.models.review import AutoReviewTemplate
         from app.models.competitor import CompetitorBlacklist
         from app.models.ai_key import AIKey
+        from app.models.ai_log import AILog
         from app.models.log import SystemLogs
         from app.models.global_category import FunpayGlobalCategory
 

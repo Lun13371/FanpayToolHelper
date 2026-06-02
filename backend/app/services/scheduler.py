@@ -37,6 +37,15 @@ class SchedulerManager:
         if not self.scheduler.running:
             self.scheduler.start()
             logger.info("Фоновый планировщик APScheduler успешно запущен.")
+            
+            # Регистрируем периодическую задачу очистки старых логов ИИ каждые 24 часа
+            self.scheduler.add_job(
+                self.job_cleanup_old_ai_logs,
+                trigger="interval",
+                hours=24,
+                id="global_ai_logs_cleanup",
+                replace_existing=True
+            )
 
     def shutdown(self):
         """Остановка планировщика."""
@@ -277,7 +286,9 @@ class SchedulerManager:
                         ai_reply = await AIService.generate_response(
                             db=db,
                             system_prompt=full_system_prompt,
-                            history=history
+                            history=history,
+                            account_id=account_id,
+                            action_type="chat_reply"
                         )
 
                         # Отправляем ответ в чат
@@ -674,6 +685,24 @@ class SchedulerManager:
                     pass
                 del self.active_jobs[key]
         logger.info(f"Все фоновые задачи для аккаунта {account_id} остановлены.")
+
+    async def job_cleanup_old_ai_logs(self):
+        """Периодическая задача: удаляет логи ИИ старше 14 дней."""
+        async with async_session_maker() as db:
+            try:
+                from sqlalchemy import delete
+                from app.models.ai_log import AILog
+                from datetime import datetime, timedelta
+                
+                threshold = datetime.utcnow() - timedelta(days=14)
+                stmt = delete(AILog).where(AILog.created_at < threshold)
+                res = await db.execute(stmt)
+                await db.commit()
+                deleted_count = res.rowcount
+                if deleted_count > 0:
+                    logger.info(f"[Cleanup] Автоматически удалено {deleted_count} устаревших записей логов ИИ (старше 14 дней).")
+            except Exception as e:
+                logger.error(f"[Cleanup] Ошибка при автоматической очистке логов ИИ: {e}")
 
     async def sync_all_active_accounts(self):
         """Синхронизирует задачи планировщика со всеми активными аккаунтами в БД."""

@@ -89,12 +89,55 @@ class AIService:
         await db.commit()
 
     @classmethod
+    async def log_interaction(
+        cls,
+        db: AsyncSession,
+        key_id: Optional[int],
+        model: str,
+        action_type: str,
+        prompt: str,
+        response: Optional[str],
+        status: str,
+        prompt_tokens: int = 0,
+        completion_tokens: int = 0,
+        total_tokens: int = 0,
+        error_message: Optional[str] = None,
+        account_id: Optional[int] = None
+    ):
+        """
+        Сохраняет запись о взаимодействии с ИИ в базу данных.
+        Обрабатывает ошибки локально, чтобы сбой сохранения лога никогда не ломал основную логику.
+        """
+        try:
+            from app.models.ai_log import AILog
+            log_entry = AILog(
+                key_id=key_id,
+                model=model,
+                action_type=action_type,
+                prompt=prompt,
+                response=response,
+                status=status,
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+                total_tokens=total_tokens,
+                error_message=error_message,
+                account_id=account_id,
+                created_at=datetime.utcnow()
+            )
+            db.add(log_entry)
+            await db.commit()
+        except Exception as ex:
+            logger.error(f"Ошибка сохранения лога взаимодействия с ИИ: {ex}")
+
+    @classmethod
     async def generate_response(
         cls, 
         db: AsyncSession, 
         system_prompt: str, 
         history: List[Tuple[str, str]], # Список кортежей (отправитель, текст)
-        screenshot_base64: Optional[str] = None
+        screenshot_base64: Optional[str] = None,
+        account_id: Optional[int] = None,
+        action_type: str = "chat_reply"
     ) -> str:
         """
         Генерирует ответ ИИ на основе системного промпта, истории переписки и опционального скриншота.
@@ -156,6 +199,11 @@ class AIService:
         
         candidate_models = vision_models if screenshot_base64 else text_models
 
+        # Формируем текст промпта для сохранения логов
+        prompt_log_text = f"[System Prompt]\n{system_prompt}\n\n[History]\n" + "\n".join([f"{sender}: {text}" for sender, text in history])
+        if screenshot_base64:
+            prompt_log_text += "\n\n[Attached Screenshot: Yes]"
+
         while attempt < max_attempts:
             key_obj = await cls.get_next_key(db)
             if not key_obj:
@@ -180,15 +228,58 @@ class AIService:
                     
                     # Фиксируем успех ключа
                     await cls.mark_success(db, key_obj)
+                    
+                    # Сохраняем подробный успешный лог взаимодействия
+                    usage = getattr(response, 'usage', None)
+                    prompt_tokens = usage.prompt_tokens if usage else 0
+                    completion_tokens = usage.completion_tokens if usage else 0
+                    total_tokens = usage.total_tokens if usage else 0
+                    
+                    await cls.log_interaction(
+                        db=db,
+                        key_id=key_obj.id,
+                        model=model,
+                        action_type=action_type,
+                        prompt=prompt_log_text,
+                        response=reply,
+                        status="success",
+                        prompt_tokens=prompt_tokens,
+                        completion_tokens=completion_tokens,
+                        total_tokens=total_tokens,
+                        account_id=account_id
+                    )
+                    
                     return reply
                     
                 except litellm.NotFoundError as e:
                     # Если модель не найдена на этом провайдере/аккаунте, пробуем следующую
                     logger.warning(f"Модель {model} не найдена или не развернута: {str(e)}. Пробуем следующую из списка...")
+                    await cls.log_interaction(
+                        db=db,
+                        key_id=key_obj.id,
+                        model=model,
+                        action_type=action_type,
+                        prompt=prompt_log_text,
+                        response=None,
+                        status="error",
+                        error_message=f"Model NotFoundError: {str(e)}",
+                        account_id=account_id
+                    )
                     continue
                 except Exception as e:
                     # Если другая ошибка (неверный ключ, лимиты), фиксируем сбой ключа и выходим из цикла моделей, чтобы взять другой ключ!
                     logger.warning(f"Сбой вызова ИИ с ключом ID {key_obj.id} для модели {model}: {str(e)}")
+                    await cls.log_interaction(
+                        db=db,
+                        key_id=key_obj.id,
+                        model=model,
+                        action_type=action_type,
+                        prompt=prompt_log_text,
+                        response=None,
+                        status="error",
+                        error_message=str(e),
+                        account_id=account_id
+                    )
                     break
             else:
                 # Если все модели из списка выдали NotFoundError, засчитываем попытку ключа и идем на следующий круг
@@ -281,11 +372,50 @@ class AIService:
                     )
                     reply = response.choices[0].message.content.strip()
                     await cls.mark_success(db, current_key)
+                    
+                    # Сохраняем подробный успешный лог взаимодействия
+                    usage = getattr(response, 'usage', None)
+                    prompt_tokens = usage.prompt_tokens if usage else 0
+                    completion_tokens = usage.completion_tokens if usage else 0
+                    total_tokens = usage.total_tokens if usage else 0
+                    
+                    await cls.log_interaction(
+                        db=db,
+                        key_id=current_key.id,
+                        model=model,
+                        action_type="review_classification",
+                        prompt=f"[System Prompt]\n{system_prompt}\n\n[Input]\n{user_input}",
+                        response=reply,
+                        status="success",
+                        prompt_tokens=prompt_tokens,
+                        completion_tokens=completion_tokens,
+                        total_tokens=total_tokens
+                    )
                     break
-                except litellm.NotFoundError:
+                except litellm.NotFoundError as e:
+                    await cls.log_interaction(
+                        db=db,
+                        key_id=current_key.id,
+                        model=model,
+                        action_type="review_classification",
+                        prompt=f"[System Prompt]\n{system_prompt}\n\n[Input]\n{user_input}",
+                        response=None,
+                        status="error",
+                        error_message=f"Model NotFoundError: {str(e)}"
+                    )
                     continue
                 except Exception as e:
                     logger.warning(f"Сбой пакетной классификации отзывов ИИ с ключом ID {current_key.id} для модели {model}: {str(e)}")
+                    await cls.log_interaction(
+                        db=db,
+                        key_id=current_key.id,
+                        model=model,
+                        action_type="review_classification",
+                        prompt=f"[System Prompt]\n{system_prompt}\n\n[Input]\n{user_input}",
+                        response=None,
+                        status="error",
+                        error_message=str(e)
+                    )
                     break
             
             if reply:

@@ -1129,7 +1129,9 @@ async def run_account_ai_audit(
         generated_report = await AIService.generate_response(
             db, 
             system_prompt=system_prompt, 
-            history=[("buyer", prompt)]
+            history=[("buyer", prompt)],
+            account_id=account.id,
+            action_type="profile_audit"
         )
         
         # Обновляем кэш в базе данных
