@@ -28,6 +28,9 @@ async def get_session() -> AsyncGenerator[AsyncSession, None]:
         yield session
 
 # Функция для автоматического создания таблиц (при первом запуске без Alembic)
+# ВНИМАНИЕ: Для управления схемой используйте Alembic миграции:
+#   cd backend && alembic revision --autogenerate -m "description"
+#   cd backend && alembic upgrade head
 async def init_db() -> None:
     from sqlalchemy import text
     # Включаем расширение pgvector для работы векторных эмбеддингов
@@ -38,12 +41,6 @@ async def init_db() -> None:
         pass
 
     async with engine.begin() as conn:
-        # Удаляем таблицу инсайтов принудительно, чтобы пересоздать ее с верной размерностью (4096)
-        try:
-            await conn.execute(text("DROP TABLE IF EXISTS agent_insights CASCADE"))
-        except Exception:
-            pass
-
         # Импортируем все модели перед созданием, чтобы SQLModel знал о них
         from app.models.user import User
         from app.models.account import FanpayAccount
@@ -60,132 +57,3 @@ async def init_db() -> None:
         from app.models.agents import AgentRun, AgentState, AgentLog, GeneratedLot, AgentInsight
 
         await conn.run_sync(SQLModel.metadata.create_all)
-        
-    # Добавляем колонки динамически, каждая в СВОЕЙ изолированной транзакции
-    from sqlalchemy import text
-    
-    # 1. ip_address
-    try:
-        async with engine.begin() as conn:
-            await conn.execute(text("ALTER TABLE fanpay_accounts ADD COLUMN ip_address VARCHAR(255)"))
-    except Exception:
-        pass # Колонка уже существует или другая ошибка
-        
-    # 2. geo_location
-    try:
-        async with engine.begin() as conn:
-            await conn.execute(text("ALTER TABLE fanpay_accounts ADD COLUMN geo_location VARCHAR(255)"))
-    except Exception:
-        pass
-        
-    # 3. last_synced
-    try:
-        async with engine.begin() as conn:
-            await conn.execute(text("ALTER TABLE fanpay_accounts ADD COLUMN last_synced TIMESTAMP"))
-    except Exception:
-        pass
-        
-    # 4. lots_cache
-    try:
-        async with engine.begin() as conn:
-            await conn.execute(text("ALTER TABLE fanpay_accounts ADD COLUMN lots_cache JSON"))
-    except Exception:
-        pass
-        
-    # 5. next_raise
-    try:
-        async with engine.begin() as conn:
-            await conn.execute(text("ALTER TABLE fanpay_accounts ADD COLUMN next_raise TIMESTAMP"))
-    except Exception:
-        pass
-
-    # 6. ai_audit_cache
-    try:
-        async with engine.begin() as conn:
-            await conn.execute(text("ALTER TABLE fanpay_accounts ADD COLUMN ai_audit_cache TEXT"))
-    except Exception:
-        pass
-
-    # 7. ai_audit_created_at
-    try:
-        async with engine.begin() as conn:
-            await conn.execute(text("ALTER TABLE fanpay_accounts ADD COLUMN ai_audit_created_at TIMESTAMP"))
-    except Exception:
-        pass
-
-    # 8. reviews_cache
-    try:
-        async with engine.begin() as conn:
-            await conn.execute(text("ALTER TABLE fanpay_accounts ADD COLUMN reviews_cache JSON"))
-    except Exception:
-        pass
-
-    # 9. sales_stats_cache
-    try:
-        async with engine.begin() as conn:
-            await conn.execute(text("ALTER TABLE fanpay_accounts ADD COLUMN sales_stats_cache JSON"))
-    except Exception:
-        pass
-
-    # 10. global_damping_active
-    try:
-        async with engine.begin() as conn:
-            await conn.execute(text("ALTER TABLE fanpay_accounts ADD COLUMN global_damping_active BOOLEAN DEFAULT FALSE"))
-    except Exception:
-        pass
-
-    # 11. global_undercut_value
-    try:
-        async with engine.begin() as conn:
-            await conn.execute(text("ALTER TABLE fanpay_accounts ADD COLUMN global_undercut_value FLOAT DEFAULT 0.01"))
-    except Exception:
-        pass
-
-    # 12. global_min_price
-    try:
-        async with engine.begin() as conn:
-            await conn.execute(text("ALTER TABLE fanpay_accounts ADD COLUMN global_min_price FLOAT DEFAULT 0.0"))
-    except Exception:
-        pass
-
-    # 13. always_online
-    try:
-        async with engine.begin() as conn:
-            await conn.execute(text("ALTER TABLE fanpay_accounts ADD COLUMN always_online BOOLEAN DEFAULT TRUE"))
-    except Exception:
-        pass
-
-    # 14. auto_raise_active
-    try:
-        async with engine.begin() as conn:
-            await conn.execute(text("ALTER TABLE fanpay_accounts ADD COLUMN auto_raise_active BOOLEAN DEFAULT TRUE"))
-    except Exception:
-        pass
-
-    # 15. auto_delivery_active
-    try:
-        async with engine.begin() as conn:
-            await conn.execute(text("ALTER TABLE fanpay_accounts ADD COLUMN auto_delivery_active BOOLEAN DEFAULT TRUE"))
-    except Exception:
-        pass
-
-    # 16. ai_reply_active
-    try:
-        async with engine.begin() as conn:
-            await conn.execute(text("ALTER TABLE fanpay_accounts ADD COLUMN ai_reply_active BOOLEAN DEFAULT TRUE"))
-    except Exception:
-        pass
-
-    # 17. operator_snooze_minutes
-    try:
-        async with engine.begin() as conn:
-            await conn.execute(text("ALTER TABLE fanpay_accounts ADD COLUMN operator_snooze_minutes INTEGER DEFAULT 20"))
-    except Exception:
-        pass
-
-    # 18. review_followup_active
-    try:
-        async with engine.begin() as conn:
-            await conn.execute(text("ALTER TABLE fanpay_accounts ADD COLUMN review_followup_active BOOLEAN DEFAULT TRUE"))
-    except Exception:
-        pass
