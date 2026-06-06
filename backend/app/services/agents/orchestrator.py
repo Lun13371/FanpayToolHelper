@@ -201,8 +201,8 @@ class AgentOrchestrator:
         # Подбираем модели по типу агента
         # Дорогие/умные — для логических задач (ранжирование, ценообразование)
         # Дешёвые/быстрые — для генерации текста, скрапинга
-        _smart_agents = {cls.SUB_CATEGORY_RANKER, cls.AGENT_SELECTOR, cls.SUB_PRICE_ANALYZER, cls.AGENT_MEMORY}
-        _cheap_agents = {cls.SUB_MARKET_SCRAPER, cls.SUB_LOT_WRITER, cls.SUB_COPYWRITER, cls.AGENT_GENERATOR}
+        _smart_agents = {cls.SUB_CATEGORY_RANKER, cls.AGENT_SELECTOR, cls.SUB_MARGIN_ANALYST, cls.AGENT_MEMORY}
+        _cheap_agents = {cls.SUB_MARKET_SCRAPER, cls.SUB_COPYWRITER, cls.AGENT_GENERATOR}
 
         if agent_name in _smart_agents:
             # Умные задачи: Kimi K2 Instruct → MiniMax M2.5 → GPT OSS 20B

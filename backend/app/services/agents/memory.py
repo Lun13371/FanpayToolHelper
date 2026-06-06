@@ -119,6 +119,7 @@ class SemanticMemoryService:
             distance_threshold = 1.0 - threshold
             stmt = (
                 select(AgentInsight)
+                .where(AgentInsight.embedding.is_not(None))   # исключаем NULL embedding
                 .where(AgentInsight.embedding.op("<=>")(vector) < distance_threshold)
                 .order_by(AgentInsight.embedding.op("<=>")(vector))
                 .limit(limit)
