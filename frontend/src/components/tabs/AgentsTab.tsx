@@ -30,6 +30,12 @@ export interface LotsFilter {
   sort_dir: 'asc' | 'desc';
 }
 
+// Составной ключ для agentStates — agent_name + category_context
+// Суб-агент с одним именем может работать параллельно в нескольких категориях
+export function makeStateKey(agentName: string, categoryContext?: string | null) {
+  return categoryContext ? `${agentName}::${categoryContext}` : agentName;
+}
+
 export default function AgentsTab() {
   const { token, accounts } = useAppContext();
 
@@ -83,7 +89,14 @@ export default function AgentsTab() {
       const data = await res.json();
       if (data.active && data.run) {
         setActiveRun(data.run);
-        if (data.agent_states) setAgentStates((prev) => ({ ...prev, ...data.agent_states }));
+        // Строим map с составными ключами из snapshot agent_states
+        if (Array.isArray(data.agent_states)) {
+          const statesMap: Record<string, AgentState> = {};
+          for (const s of data.agent_states) {
+            statesMap[makeStateKey(s.agent_name, s.category_context)] = s;
+          }
+          setAgentStates((prev) => ({ ...prev, ...statesMap }));
+        }
         connectSSE(data.run.id);
       }
     } catch (err) {
@@ -134,15 +147,14 @@ export default function AgentsTab() {
         const data = JSON.parse(event.data);
 
         if (data.type === 'log') {
-          // Новая запись лога от агента
           setLogs((prev) => (prev.some((item) => item.id === data.id) ? prev : [...prev, data]));
 
         } else if (data.type === 'snapshot') {
-          // Начальный снимок при подключении SSE — массив всех состояний агентов
+          // Начальный снимок — строим map с составными ключами
           if (Array.isArray(data.agent_states)) {
             const statesMap: Record<string, AgentState> = {};
             for (const s of data.agent_states) {
-              statesMap[s.agent_name] = s;
+              statesMap[makeStateKey(s.agent_name, s.category_context)] = s;
             }
             setAgentStates((prev) => ({ ...prev, ...statesMap }));
           }
@@ -158,11 +170,13 @@ export default function AgentsTab() {
           });
 
         } else if (data.type === 'state') {
-          // Обновление одного агента: { agent_name, status, current_task, tokens_used, ... }
+          // Составной ключ: agent_name + category_context
+          // Один суб-агент может работать параллельно в нескольких категориях — не перезаписываем
           if (data.agent_name) {
+            const stateKey = makeStateKey(data.agent_name, data.category_context);
             setAgentStates((prev) => ({
               ...prev,
-              [data.agent_name]: {
+              [stateKey]: {
                 agent_name: data.agent_name,
                 parent_agent: data.parent_agent ?? null,
                 category_context: data.category_context ?? null,
@@ -178,7 +192,6 @@ export default function AgentsTab() {
           }
 
         } else if (data.type === 'progress') {
-          // Прогресс категорий: { categories_done, categories_total }
           setActiveRun((prev) => {
             if (!prev) return prev;
             return {
@@ -189,7 +202,6 @@ export default function AgentsTab() {
           });
 
         } else if (data.type === 'run_meta') {
-          // Обновление токенов и статуса run
           setActiveRun((prev) => {
             if (!prev) return prev;
             return {
@@ -217,7 +229,6 @@ export default function AgentsTab() {
     };
 
     sse.onerror = () => {
-      // При разрыве SSE — переподключаемся через 3с если run ещё активен
       setTimeout(() => {
         if (sseRef.current === sse) connectSSE(runId);
       }, 3000);
@@ -307,10 +318,10 @@ export default function AgentsTab() {
     const s = run.status === 'completed' ? 'completed' : run.status === 'failed' ? 'failed' : 'pending';
     setAgentStates({
       CategorySelector: { agent_name: 'CategorySelector', status: s, tokens_used: 0 },
-      Memory:           { agent_name: 'Memory', status: s, tokens_used: 0 },
-      ListingAnalyzer:  { agent_name: 'ListingAnalyzer', status: s, tokens_used: 0 },
-      LotGenerator:     { agent_name: 'LotGenerator', status: s, tokens_used: 0 },
-      Publisher:        { agent_name: 'Publisher', status: s, tokens_used: 0 },
+      Memory:           { agent_name: 'Memory',           status: s, tokens_used: 0 },
+      ListingAnalyzer:  { agent_name: 'ListingAnalyzer',  status: s, tokens_used: 0 },
+      LotGenerator:     { agent_name: 'LotGenerator',     status: s, tokens_used: 0 },
+      Publisher:        { agent_name: 'Publisher',         status: s, tokens_used: 0 },
     });
   };
 
