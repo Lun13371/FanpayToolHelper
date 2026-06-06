@@ -141,6 +141,8 @@ export interface AgentLog {
   created_at: string;
 }
 
+export type LotType = 'classic' | 'digital' | 'resell' | 'service';
+
 export interface GeneratedLot {
   id: number;
   run_id: number;
@@ -157,4 +159,13 @@ export interface GeneratedLot {
   price_avg_market?: number | null;
   price_strategy?: string | null;
   created_at?: string;
+  // Тип лота (classic | digital | resell | service)
+  lot_type?: LotType | null;
+  // Перепродажа
+  resell_source_url?: string | null;
+  resell_source_price?: number | null;
+  resell_margin_pct?: number | null;
+  // Цифровой товар
+  digital_content_idea?: string | null;
+  digital_difficulty?: 'easy' | 'medium' | 'hard' | null;
 }

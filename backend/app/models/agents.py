@@ -76,6 +76,22 @@ class GeneratedLot(SQLModel, table=True):
     price_strategy: Optional[str] = Field(default=None)   # "undercut" | "premium" | "median"
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
+    # --- Тип лота ---
+    # "classic"  — обычный (валюта, аккаунт, буст) — нужен игровой ресурс
+    # "digital"  — цифровой файл/гайд — нужно только создать файл, не нужен аккаунт в игре
+    # "resell"   — перепродажа: купил у другого продавца дешевле → продаёшь дороже
+    # "service"  — услуга без аккаунта (консультация, помощь, скрипт)
+    lot_type: str = Field(default="classic", index=True)
+
+    # --- RESELL: источник поставки ---
+    resell_source_url: Optional[str] = Field(default=None)
+    resell_source_price: Optional[float] = Field(default=None)
+    resell_margin_pct: Optional[float] = Field(default=None)  # маржа % после комиссии FunPay (7%)
+
+    # --- DIGITAL: идея и сложность создания ---
+    digital_content_idea: Optional[str] = Field(default=None, sa_column=Column(Text, nullable=True))
+    digital_difficulty: Optional[str] = Field(default=None)  # "easy" | "medium" | "hard"
+
 
 class AgentInsight(SQLModel, table=True):
     __tablename__ = "agent_insights"

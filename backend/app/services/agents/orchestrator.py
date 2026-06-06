@@ -32,6 +32,7 @@ class AgentOrchestrator:
     AGENT_PUBLISHER = "Publisher"
 
     SUB_TREND_RESEARCHER = "TrendResearcher"
+    SUB_TREND_SCANNER = "TrendScanner"
     SUB_MEMORY_READER = "MemoryReader"
     SUB_CATEGORY_RANKER = "CategoryRanker"
 
@@ -39,11 +40,14 @@ class AgentOrchestrator:
     SUB_WEB_RESEARCHER = "WebResearcher"
     SUB_MARGIN_ANALYST = "MarginAnalyst"
     SUB_INSIGHT_WRITER = "InsightWriter"
+    SUB_MARKET_CLASSIFIER = "MarketClassifier"
 
     SUB_SUPPLY_STRATEGIST = "SupplyStrategist"
     SUB_COPYWRITER = "CopywriterAgent"
     SUB_PRICING = "PricingAgent"
     SUB_SEO = "SEOAgent"
+    SUB_RESELL_SCOUT = "ResellScout"
+    SUB_DIGITAL_IDEATOR = "DigitalIdeator"
 
     SUB_QUALITY = "QualityChecker"
     SUB_DUPLICATE = "DuplicateFilter"
@@ -52,9 +56,9 @@ class AgentOrchestrator:
     MAIN_AGENTS = [AGENT_SELECTOR, AGENT_MEMORY, AGENT_ANALYZER, AGENT_GENERATOR, AGENT_PUBLISHER]
 
     SUBAGENTS_BY_PARENT = {
-        AGENT_SELECTOR: [SUB_TREND_RESEARCHER, SUB_MEMORY_READER, SUB_CATEGORY_RANKER],
-        AGENT_ANALYZER: [SUB_MARKET_SCRAPER, SUB_WEB_RESEARCHER, SUB_MARGIN_ANALYST, SUB_INSIGHT_WRITER],
-        AGENT_GENERATOR: [SUB_SUPPLY_STRATEGIST, SUB_COPYWRITER, SUB_PRICING, SUB_SEO],
+        AGENT_SELECTOR: [SUB_TREND_RESEARCHER, SUB_TREND_SCANNER, SUB_MEMORY_READER, SUB_CATEGORY_RANKER],
+        AGENT_ANALYZER: [SUB_MARKET_SCRAPER, SUB_WEB_RESEARCHER, SUB_MARGIN_ANALYST, SUB_INSIGHT_WRITER, SUB_MARKET_CLASSIFIER],
+        AGENT_GENERATOR: [SUB_SUPPLY_STRATEGIST, SUB_COPYWRITER, SUB_PRICING, SUB_SEO, SUB_RESELL_SCOUT, SUB_DIGITAL_IDEATOR],
         AGENT_PUBLISHER: [SUB_QUALITY, SUB_DUPLICATE, SUB_EXPORTER],
     }
 
@@ -198,32 +202,34 @@ class AgentOrchestrator:
         parent_agent: Optional[str] = None,
         category_context: Optional[str] = None,
     ) -> Dict[str, Any]:
-        # Подбираем модели по типу агента
-        # Умные — для логических задач (ранжирование, ценообразование)
-        # Дешёвые/быстрые — для генерации текста, скрапинга
-        # Только serverless! kimi-k2-instruct — НЕ serverless, даёт 404
-        _smart_agents = {cls.SUB_CATEGORY_RANKER, cls.AGENT_SELECTOR, cls.SUB_MARGIN_ANALYST, cls.AGENT_MEMORY}
+        _smart_agents = {
+            cls.SUB_CATEGORY_RANKER,
+            cls.AGENT_SELECTOR,
+            cls.SUB_MARGIN_ANALYST,
+            cls.AGENT_MEMORY,
+            cls.SUB_MARKET_CLASSIFIER,
+            cls.SUB_RESELL_SCOUT,
+            cls.SUB_DIGITAL_IDEATOR,
+        }
         _cheap_agents = {cls.SUB_MARKET_SCRAPER, cls.SUB_COPYWRITER, cls.AGENT_GENERATOR}
+
         if agent_name in _smart_agents:
-            # Умные задачи: MiniMax M2.7 → MiniMax M2.5 → GPT OSS 20B
             candidate_models = [
-                "accounts/fireworks/models/minimax-m2p7",         # $0.30/M, 196k ctx, serverless ✅
-                "accounts/fireworks/models/minimax-m2p5",         # $0.30/M, 196k ctx, serverless ✅
-                "accounts/fireworks/models/gpt-oss-20b",          # $0.07/M, 131k ctx, serverless ✅
+                "accounts/fireworks/models/minimax-m2p7",
+                "accounts/fireworks/models/minimax-m2p5",
+                "accounts/fireworks/models/gpt-oss-20b",
             ]
         elif agent_name in _cheap_agents:
-            # Генерация текста/лотов: GPT OSS 20B (самый дешёвый) → MiniMax M2.5 → M2.7
             candidate_models = [
-                "accounts/fireworks/models/gpt-oss-20b",          # $0.07/M, 131k ctx, serverless ✅
-                "accounts/fireworks/models/minimax-m2p5",         # $0.30/M, 196k ctx, serverless ✅
-                "accounts/fireworks/models/minimax-m2p7",         # $0.30/M, 196k ctx, serverless ✅
+                "accounts/fireworks/models/gpt-oss-20b",
+                "accounts/fireworks/models/minimax-m2p5",
+                "accounts/fireworks/models/minimax-m2p7",
             ]
         else:
-            # По умолчанию: только serverless модели
             candidate_models = [
-                "accounts/fireworks/models/minimax-m2p5",         # $0.30/M, serverless ✅
-                "accounts/fireworks/models/minimax-m2p7",         # $0.30/M, serverless ✅
-                "accounts/fireworks/models/gpt-oss-20b",          # $0.07/M, serverless ✅
+                "accounts/fireworks/models/minimax-m2p5",
+                "accounts/fireworks/models/minimax-m2p7",
+                "accounts/fireworks/models/gpt-oss-20b",
             ]
 
         messages = [
@@ -237,7 +243,6 @@ class AgentOrchestrator:
             if not key_obj:
                 raise RuntimeError("Нет активных ключей ИИ в базе данных")
 
-            # Exponential backoff при rate limit: 3s → 6s → 12s → 24s (до 4 попыток на модель)
             max_retries_per_model = 4
             base_delay = 3.0
 
@@ -274,12 +279,10 @@ class AgentOrchestrator:
                         })
                     raw_text = response.choices[0].message.content.strip()
                     return json.loads(raw_text)
-
                 except asyncio.CancelledError:
                     raise
                 except litellm.RateLimitError as e:
-                    # Rate limit — не ломаем ключ, ждём и повторяем ту же модель
-                    delay = base_delay * (2 ** attempt)  # 3 → 6 → 12 → 24
+                    delay = base_delay * (2 ** attempt)
                     logger.warning(
                         f"[{agent_name}] Rate limit на {model} "
                         f"(попытка {attempt + 1}/{max_retries_per_model}), "
@@ -288,19 +291,16 @@ class AgentOrchestrator:
                     await AIService.mark_key_failure(db, key_obj, error=e)
                     if attempt < max_retries_per_model - 1:
                         await asyncio.sleep(delay)
-                        # Берём ключ заново — может другой уже свободен
                         fresh_key = await AIService.get_next_key(db)
                         if fresh_key:
                             key_obj = fresh_key
                         continue
-                    else:
-                        last_exception = e
-                        break  # Все попытки на эту модель исчерпаны → следующая модель
-
+                    last_exception = e
+                    break
                 except Exception as e:
                     await AIService.mark_key_failure(db, key_obj, error=e)
                     last_exception = e
-                    break  # Не rate limit — сразу следующая модель
+                    break
 
         raise last_exception if last_exception else RuntimeError("Все модели-кандидаты вернули ошибку")
 
@@ -332,38 +332,44 @@ class AgentOrchestrator:
 
         await cls.update_agent_state(db, run_id, cls.SUB_TREND_RESEARCHER, "running", "Сбор трендов", parent_agent=cls.AGENT_SELECTOR, progress=15)
         search_results = await AgentSearchService.search(
-            "most profitable games for RMT selling funpay popular games 2026",
+            "funpay profitable digital goods guides resell games 2026 market trends",
             api_key=tavily_key,
-            max_results=6,
+            max_results=8,
         )
         trend_context = "\n\n".join([f"[{i+1}] {r['title']}\n{r['content']}\nURL: {r['url']}" for i, r in enumerate(search_results)])
         await cls.update_agent_state(db, run_id, cls.SUB_TREND_RESEARCHER, "completed", "Тренды собраны", parent_agent=cls.AGENT_SELECTOR, progress=100)
 
         await cls.update_agent_state(db, run_id, cls.SUB_MEMORY_READER, "running", "Чтение памяти", parent_agent=cls.AGENT_SELECTOR, progress=40)
-        insights = await SemanticMemoryService.search_similar_insights(db, "profitable games high demand automation", limit=10)
+        insights = await SemanticMemoryService.search_similar_insights(db, "profitable digital guides resell services games funpay", limit=12)
         memory_context = "\n".join([f"- {i.game_name} / {i.subcategory_name}: {i.content[:180]}" for i in insights])
         await cls.update_agent_state(db, run_id, cls.SUB_MEMORY_READER, "completed", f"{len(insights)} инсайтов", parent_agent=cls.AGENT_SELECTOR, progress=100)
 
         await cls.update_agent_state(db, run_id, cls.SUB_CATEGORY_RANKER, "running", "Ранжирование", parent_agent=cls.AGENT_SELECTOR, progress=60)
-        candidate_pool = sorted(all_categories, key=lambda c: c.game_name.lower())[:160]
+        candidate_pool = sorted(all_categories, key=lambda c: (c.game_name.lower(), c.subcategory_name.lower()))[:400]
         available = "\n".join([f"- ID:{c.node_id} | {c.game_name} | {c.subcategory_name} | {c.category_type}" for c in candidate_pool])
 
-        system_prompt = """Ты — CategoryRanker для RMT/FunPay. Верни строго JSON.
-Задача: выбрать перспективные категории на базе веб-трендов и прошлой памяти.
-Шаги рассуждения выполняй ВНУТРИ, наружу выводи только JSON.
+        system_prompt = """Ты — CategoryRanker для FunPay. Верни строго JSON.
+Задача: выбрать перспективные категории для:
+1) цифровых файлов/гайдов, которые можно просто отдать после покупки
+2) перепродажи, где можно купить у поставщика дешевле и продать дороже
+3) услуг без обязательного игрового аккаунта
+4) классических лотов, если они реально прибыльны
+
+Рассуждай ВНУТРИ, наружу только JSON.
 Формат:
 {
   "selected_ids": ["81", "119"],
   "reasoning": [
-    {"node_id": "81", "why": "...", "score": 0.92}
+    {"node_id": "81", "why": "...", "score": 0.92, "hypothesis": "digital|resell|service|classic"}
   ]
 }
 Критерии:
-1) стабильный спрос
-2) возможность автоматизации
-3) низкая сложность поставки
-4) конкуренция не запредельная
-5) хорошие чеки или быстрая оборачиваемость"""
+- спрос
+- возможность продать БЕЗ владения игровым аккаунтом/ресурсом
+- возможность создать цифровой файл
+- возможность безопасной перепродажи
+- адекватная конкуренция
+- быстрая оборачиваемость"""
 
         user_prompt = f"""Нужно выбрать ровно {limit_categories} категорий.
 
@@ -375,6 +381,11 @@ class AgentOrchestrator:
 
 Список доступных категорий:
 {available}
+
+Старайся предпочитать категории, где можно:
+- продавать PDF/гайды/чеклисты/файлы
+- перепродавать товар у более дешёвого продавца
+- оказывать услугу без передачи аккаунта
 
 Верни только JSON."""
 
@@ -401,44 +412,64 @@ class AgentOrchestrator:
         await cls.update_agent_state(db, run_id, cls.SUB_MARKET_SCRAPER, "running", "Скрапинг лотов", parent_agent=cls.AGENT_ANALYZER, category_context=ctx, progress=10)
         offers = await AgentScraperService.scrape_category_offers(cat.node_id, cat.category_type, funpay_client)
         if not offers:
+            offers, detected_category_type = await AgentScraperService.scrape_all_category_types(cat.node_id, funpay_client)
+            if offers:
+                cat.category_type = detected_category_type
+        if not offers:
             await cls.update_agent_state(db, run_id, cls.SUB_MARKET_SCRAPER, "failed", "Нет лотов", parent_agent=cls.AGENT_ANALYZER, category_context=ctx, progress=100, error_message="offers empty")
             return None
+
         min_p, max_p, avg_p, med_p = cls._market_stats(offers)
         await cls.log_agent(db, run_id, cls.SUB_MARKET_SCRAPER, f"{ctx}: {len(offers)} лотов, min={min_p}, max={max_p}, avg={avg_p:.2f}, median={med_p:.2f}", parent_agent=cls.AGENT_ANALYZER, category_context=ctx)
         await cls.update_agent_state(db, run_id, cls.SUB_MARKET_SCRAPER, "completed", "Скрапинг завершён", parent_agent=cls.AGENT_ANALYZER, category_context=ctx, progress=100)
 
         await cls.update_agent_state(db, run_id, cls.SUB_WEB_RESEARCHER, "running", "Поиск гайдов", parent_agent=cls.AGENT_ANALYZER, category_context=ctx, progress=35)
-        search_query = f"how to farm cheap purchase keys automation {cat.game_name} {cat.subcategory_name}"
-        guide_results = await AgentSearchService.search(search_query, api_key=tavily_key, max_results=4)
+        search_query = f"{cat.game_name} {cat.subcategory_name} guide pdf checklist resell funpay strategy 2026"
+        guide_results = await AgentSearchService.search(search_query, api_key=tavily_key, max_results=5)
         guide_context = "\n".join([f"- {g['title']}\n{g['content']}\n{g['url']}" for g in guide_results])
         await cls.update_agent_state(db, run_id, cls.SUB_WEB_RESEARCHER, "completed", f"{len(guide_results)} источников", parent_agent=cls.AGENT_ANALYZER, category_context=ctx, progress=100)
 
-        await cls.update_agent_state(db, run_id, cls.SUB_MARGIN_ANALYST, "running", "Маржинальный анализ", parent_agent=cls.AGENT_ANALYZER, category_context=ctx, progress=55)
+        await cls.update_agent_state(db, run_id, cls.SUB_MARKET_CLASSIFIER, "running", "Классификация ниши", parent_agent=cls.AGENT_ANALYZER, category_context=ctx, progress=50)
+        inferred_type = AgentScraperService.classify_lot_type(cat.subcategory_name, offers)
         offers_sample = "\n".join([
-            f"- ID:{o['lot_id']} | Цена:{o['price']} | Кол-во:{o['amount']} | Продавец:{o['user']} | Текст:{o['description'][:140]}"
-            for o in offers[:25]
+            f"- Цена:{o.get('price')} | Продавец:{o.get('user')} | Текст:{(o.get('description') or '')[:140]}"
+            for o in offers[:20]
         ])
+        classifier_prompt = """Ты — MarketClassifier. Определи лучший формат монетизации ниши.
+Верни JSON:
+{
+  "primary_type": "classic|digital|resell|service",
+  "secondary_types": ["..."],
+  "why": "...",
+  "can_sell_without_game_account": true,
+  "digital_opportunity": "...",
+  "resell_opportunity": "..."
+}"""
+        classifier_user = f"""Категория: {ctx}
+Предварительная эвристика: {inferred_type}
+Рынок:
+{offers_sample}
 
-        system_prompt = """Ты — MarginAnalyst для FunPay/RMT. Используй CoT ВНУТРИ, но снаружи верни только JSON.
-Процедура анализа:
-1. Определи 3 самых частых/очевидных продаваемых оффера
-2. Оцени примерную маржу и ценовую нишу
-3. Найди что можно автоматизировать
-4. Сформулируй практические выводы
-Формат JSON:
+Веб-контекст:
+{guide_context}
+
+Верни только JSON."""
+        classify_json = await cls.call_llm_json(db, classifier_prompt, classifier_user, cls.SUB_MARKET_CLASSIFIER, run_id, parent_agent=cls.AGENT_ANALYZER, category_context=ctx)
+        await cls.update_agent_state(db, run_id, cls.SUB_MARKET_CLASSIFIER, "completed", f"Тип: {classify_json.get('primary_type', inferred_type)}", parent_agent=cls.AGENT_ANALYZER, category_context=ctx, progress=100)
+
+        await cls.update_agent_state(db, run_id, cls.SUB_MARGIN_ANALYST, "running", "Маржинальный анализ", parent_agent=cls.AGENT_ANALYZER, category_context=ctx, progress=65)
+        margin_prompt = """Ты — MarginAnalyst для FunPay/RMT.
+Верни JSON:
 {
   "hot_demands": ["..."],
   "automation_potential": "...",
   "easy_supplies": "...",
   "competitor_analysis": "...",
   "pricing_band": {"min": 0, "max": 0, "avg": 0, "median": 0},
-  "insights": [
-    {"type": "trend", "content": "..."},
-    {"type": "demand", "content": "..."},
-    {"type": "automation_potential", "content": "..."}
-  ]
+  "insights": [{"type": "trend", "content": "..."}]
 }"""
-        user_prompt = f"""Категория: {ctx}
+        margin_user = f"""Категория: {ctx}
+Тип ниши: {classify_json.get('primary_type', inferred_type)}
 Рыночные цены: min={min_p}, max={max_p}, avg={avg_p:.2f}, median={med_p:.2f}
 
 Листинг конкурентов:
@@ -448,7 +479,7 @@ class AgentOrchestrator:
 {guide_context}
 
 Верни только JSON."""
-        analysis_json = await cls.call_llm_json(db, system_prompt, user_prompt, cls.SUB_MARGIN_ANALYST, run_id, parent_agent=cls.AGENT_ANALYZER, category_context=ctx)
+        analysis_json = await cls.call_llm_json(db, margin_prompt, margin_user, cls.SUB_MARGIN_ANALYST, run_id, parent_agent=cls.AGENT_ANALYZER, category_context=ctx)
         await cls.update_agent_state(db, run_id, cls.SUB_MARGIN_ANALYST, "completed", "Анализ готов", parent_agent=cls.AGENT_ANALYZER, category_context=ctx, progress=100)
 
         await cls.update_agent_state(db, run_id, cls.SUB_INSIGHT_WRITER, "running", "Сохранение инсайтов", parent_agent=cls.AGENT_ANALYZER, category_context=ctx, progress=85)
@@ -470,6 +501,12 @@ class AgentOrchestrator:
             "category_context": ctx,
             "analysis": analysis_json,
             "market": {"min": min_p, "max": max_p, "avg": avg_p, "median": med_p},
+            "offers": offers,
+            "primary_type": classify_json.get("primary_type", inferred_type),
+            "secondary_types": classify_json.get("secondary_types", []),
+            "digital_opportunity": classify_json.get("digital_opportunity", ""),
+            "resell_opportunity": classify_json.get("resell_opportunity", ""),
+            "can_sell_without_game_account": classify_json.get("can_sell_without_game_account", False),
         }
 
     @classmethod
@@ -479,56 +516,104 @@ class AgentOrchestrator:
         ctx = item["category_context"]
         analysis = item["analysis"]
         market = item["market"]
+        offers = item.get("offers", [])
+        primary_type = item.get("primary_type", "classic")
 
-        await cls.update_agent_state(db, run_id, cls.SUB_SUPPLY_STRATEGIST, "running", "План поставки", parent_agent=cls.AGENT_GENERATOR, category_context=ctx, progress=20)
+        await cls.update_agent_state(db, run_id, cls.SUB_SUPPLY_STRATEGIST, "running", "План поставки", parent_agent=cls.AGENT_GENERATOR, category_context=ctx, progress=15)
         supply_plan = analysis.get("easy_supplies", "")
         await cls.update_agent_state(db, run_id, cls.SUB_SUPPLY_STRATEGIST, "completed", "Стратегия готова", parent_agent=cls.AGENT_GENERATOR, category_context=ctx, progress=100)
 
-        await cls.update_agent_state(db, run_id, cls.SUB_COPYWRITER, "running", "Генерация текстов", parent_agent=cls.AGENT_GENERATOR, category_context=ctx, progress=40)
-        few_shot_examples = """
-ПРИМЕР 1:
-Заголовок: Быстрая доставка золота WoW — 5 минут
-Описание: ✅ Мгновенная выдача\n✅ Безопасная передача\n✅ Онлайн поддержка
+        digital_idea = ""
+        digital_difficulty = None
+        if primary_type == "digital":
+            await cls.update_agent_state(db, run_id, cls.SUB_DIGITAL_IDEATOR, "running", "Идея цифрового товара", parent_agent=cls.AGENT_GENERATOR, category_context=ctx, progress=35)
+            digi_prompt = """Ты — DigitalIdeator. Придумай цифровой товар, который можно продать как файл/гайд.
+Верни JSON:
+{
+  "idea": "...",
+  "difficulty": "easy|medium|hard",
+  "deliverable_type": "pdf|checklist|video|template|script",
+  "contents": ["...", "..."],
+  "why_buy": "..."
+}"""
+            digi_user = f"""Категория: {ctx}
+Спрос: {analysis.get('competitor_analysis', '')}
+Возможность: {item.get('digital_opportunity', '')}
+Рынок: median={market['median']:.2f}, avg={market['avg']:.2f}
 
-ПРИМЕР 2:
-Заголовок: Калибровка CS2 Premier под ключ
-Описание: 🔥 Быстрый старт\n🎯 Гарантия результата\n💬 Отчёт по ходу выполнения
-"""
-        system_prompt = """Ты — CopywriterAgent для FunPay. Пиши продающие, но правдоподобные карточки.
-Используй стиль few-shot примеров. Верни JSON:
+Верни JSON."""
+            digi_json = await cls.call_llm_json(db, digi_prompt, digi_user, cls.SUB_DIGITAL_IDEATOR, run_id, parent_agent=cls.AGENT_GENERATOR, category_context=ctx)
+            digital_idea = digi_json.get("idea", "")
+            digital_difficulty = digi_json.get("difficulty")
+            await cls.update_agent_state(db, run_id, cls.SUB_DIGITAL_IDEATOR, "completed", "Идея готова", parent_agent=cls.AGENT_GENERATOR, category_context=ctx, progress=100)
+
+        resell_source = None
+        resell_buy_price = None
+        resell_margin = None
+        if primary_type == "resell":
+            await cls.update_agent_state(db, run_id, cls.SUB_RESELL_SCOUT, "running", "Поиск поставщика", parent_agent=cls.AGENT_GENERATOR, category_context=ctx, progress=35)
+            suppliers = AgentScraperService.find_cheapest_supplier(offers)
+            if suppliers:
+                cheapest = suppliers[0]
+                resell_buy_price = float(cheapest.get("price", 0) or 0)
+                resell_source = f"https://funpay.com/lots/offer?id={cheapest.get('lot_id')}"
+                resell_margin = AgentScraperService.calc_resell_margin(resell_buy_price, market['median'] or market['avg'] or resell_buy_price)
+            await cls.update_agent_state(db, run_id, cls.SUB_RESELL_SCOUT, "completed", f"Поставщик найден" if resell_source else "Поставщик не найден", parent_agent=cls.AGENT_GENERATOR, category_context=ctx, progress=100)
+
+        await cls.update_agent_state(db, run_id, cls.SUB_COPYWRITER, "running", "Генерация текстов", parent_agent=cls.AGENT_GENERATOR, category_context=ctx, progress=45)
+        system_prompt = """Ты — CopywriterAgent для FunPay. Пиши продающие и реалистичные карточки.
+Верни JSON:
 {
   "draft_lots": [
-    {"title": "...", "description": "...", "amount": 10, "ai_reasoning": "...", "seo_keywords": ["..."]}
+    {
+      "title": "...",
+      "description": "...",
+      "amount": 10,
+      "ai_reasoning": "...",
+      "seo_keywords": ["..."],
+      "lot_type": "classic|digital|resell|service"
+    }
   ]
 }"""
         user_prompt = f"""Категория: {ctx}
+Основной тип: {primary_type}
 Спрос: {analysis.get('competitor_analysis', '')}
 Автоматизация: {analysis.get('automation_potential', '')}
 Поставка: {supply_plan}
+Цифровая идея: {digital_idea}
+Источник перепродажи: {resell_source or 'нет'}
+Маржа перепродажи: {resell_margin if resell_margin is not None else 'неизвестно'}
 
-Примеры стиля:
-{few_shot_examples}
+Правила:
+- Если тип digital: лот должен продавать файл/гайд/чеклист, без требований к игровому аккаунту
+- Если тип resell: в описании должен быть акцент на быструю доставку и надёжность
+- Если type service: услуга без владения игровым аккаунтом пользователя
+- Не пиши невозможные обещания
 
-Сгенерируй 8-12 draft_lots. Только JSON."""
+Сгенерируй 6-10 draft_lots. Только JSON."""
         draft_json = await cls.call_llm_json(db, system_prompt, user_prompt, cls.SUB_COPYWRITER, run_id, parent_agent=cls.AGENT_GENERATOR, category_context=ctx)
         draft_lots = draft_json.get("draft_lots", [])
         await cls.update_agent_state(db, run_id, cls.SUB_COPYWRITER, "completed", f"Черновиков: {len(draft_lots)}", parent_agent=cls.AGENT_GENERATOR, category_context=ctx, progress=100)
 
         await cls.update_agent_state(db, run_id, cls.SUB_PRICING, "running", "Расчёт цен", parent_agent=cls.AGENT_GENERATOR, category_context=ctx, progress=70)
         pricing_prompt = """Ты — PricingAgent. Верни JSON с рассчитанными ценами.
-Формула:
-- если оффер массовый и конкурентный → цена = median * 0.95 (strategy=undercut)
-- если оффер качественный/сложный → цена = avg * 1.05 (strategy=premium)
-- если нейтрально → цена = median (strategy=median)
 Формат:
 {
   "priced_lots": [
-    {"title": "...", "price": 199, "strategy": "undercut", "why": "..."}
+    {"title": "...", "price": 199, "strategy": "undercut|premium|median|resell_margin", "why": "..."}
   ]
 }"""
         pricing_user = f"""Рынок {ctx}: min={market['min']}, max={market['max']}, avg={market['avg']:.2f}, median={market['median']:.2f}
+Тип категории: {primary_type}
+Цена закупки для перепродажи: {resell_buy_price if resell_buy_price is not None else 'нет'}
+Маржа перепродажи: {resell_margin if resell_margin is not None else 'нет'}
 Черновики:
 {json.dumps(draft_lots, ensure_ascii=False)}
+
+Правила:
+- digital: можно чуть выше median, если ценность файла хорошая
+- resell: обязательно оставь положительную маржу после комиссии 7%
+- classic/service: обычная логика рынка
 
 Верни priced_lots JSON."""
         pricing_json = await cls.call_llm_json(db, pricing_prompt, pricing_user, cls.SUB_PRICING, run_id, parent_agent=cls.AGENT_GENERATOR, category_context=ctx)
@@ -541,15 +626,20 @@ class AgentOrchestrator:
         saved: List[GeneratedLot] = []
         for d in draft_lots:
             p = priced_map.get(d.get("title"), {})
-            price = float(p.get("price", market["median"] or market["avg"] or 10.0))
+            lot_type = d.get("lot_type") or primary_type or "classic"
+            fallback_price = market["median"] or market["avg"] or 10.0
+            if lot_type == "resell" and resell_buy_price:
+                fallback_price = max(fallback_price, round(resell_buy_price * 1.20, 2))
+            price = float(p.get("price", fallback_price))
             strategy = p.get("strategy", "median")
             fields_json = {
                 "fields[summary][ru]": d.get("title", ""),
                 "fields[desc][ru]": d.get("description", ""),
-                "fields[payment_msg][ru]": "Спасибо за покупку! Инструкция будет отправлена автоматически.",
-                "price": str(int(price)),
+                "fields[payment_msg][ru]": "Спасибо за покупку! Инструкция или выдача будет отправлена автоматически.",
+                "price": str(int(price)) if price >= 1 else str(price),
                 "amount": str(int(d.get("amount", 10))),
                 "seo_keywords": d.get("seo_keywords", []),
+                "lot_type": lot_type,
             }
             lot = GeneratedLot(
                 run_id=run_id,
@@ -565,6 +655,12 @@ class AgentOrchestrator:
                 price_max_market=market["max"],
                 price_avg_market=market["avg"],
                 price_strategy=strategy,
+                lot_type=lot_type,
+                resell_source_url=resell_source if lot_type == "resell" else None,
+                resell_source_price=resell_buy_price if lot_type == "resell" else None,
+                resell_margin_pct=resell_margin if lot_type == "resell" else None,
+                digital_content_idea=digital_idea if lot_type == "digital" else None,
+                digital_difficulty=digital_difficulty if lot_type == "digital" else None,
             )
             db.add(lot)
             saved.append(lot)
@@ -685,7 +781,7 @@ class AgentOrchestrator:
             seen = set()
             duplicates = []
             for lot in quality_passed:
-                key = (lot.game_name.strip().lower(), lot.title.strip().lower())
+                key = (lot.game_name.strip().lower(), lot.title.strip().lower(), lot.lot_type)
                 if key in seen:
                     duplicates.append(lot.id)
                 else:
