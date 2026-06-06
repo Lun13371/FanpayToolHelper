@@ -21,6 +21,21 @@ class AgentRun(SQLModel, table=True):
     categories_done: int = Field(default=0)
     categories_total: int = Field(default=0)
 
+    # ─── Настройки анализа ───────────────────────────────────────────────────
+    # Типы лотов через запятую: "classic,digital,resell,service"
+    lot_types: str = Field(default="classic,digital,resell,service")
+    focus_mode: str = Field(default="balanced")         # balanced|profit|volume|speed
+    price_strategy: str = Field(default="auto")         # auto|undercut|median|premium
+    min_margin_pct: float = Field(default=10.0)
+    generate_seo: bool = Field(default=True)
+    prefer_no_account: bool = Field(default=False)
+    max_price: Optional[float] = Field(default=None)
+    min_competition: Optional[int] = Field(default=None)
+
+    @property
+    def lot_types_list(self) -> list:
+        return [t.strip() for t in self.lot_types.split(",") if t.strip()]
+
 
 class AgentState(SQLModel, table=True):
     __tablename__ = "agent_states"

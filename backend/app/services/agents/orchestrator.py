@@ -324,6 +324,7 @@ class AgentOrchestrator:
         limit_categories: int,
         tavily_key: Optional[str],
         manual_node_ids: Optional[List[str]],
+        run: Any = None,
     ) -> List[FunpayGlobalCategory]:
         if manual_node_ids:
             picked = [c for c in all_categories if str(c.node_id) in set(map(str, manual_node_ids))]
@@ -348,25 +349,27 @@ class AgentOrchestrator:
         candidate_pool = sorted(all_categories, key=lambda c: (c.game_name.lower(), c.subcategory_name.lower()))[:400]
         available = "\n".join([f"- ID:{c.node_id} | {c.game_name} | {c.subcategory_name} | {c.category_type}" for c in candidate_pool])
 
-        system_prompt = """Ты — CategoryRanker для FunPay. Верни строго JSON.
-Задача: выбрать перспективные категории для:
-1) цифровых файлов/гайдов, которые можно просто отдать после покупки
-2) перепродажи, где можно купить у поставщика дешевле и продать дороже
-3) услуг без обязательного игрового аккаунта
-4) классических лотов, если они реально прибыльны
+        system_prompt = f"""Ты — CategoryRanker для FunPay. Верни строго JSON.
+Задача: выбрать перспективные категории под КОНКРЕТНЫЕ настройки пользователя.
+
+Разрешённые типы лотов: {', '.join(run.lot_types_list if run else ['classic','digital','resell','service'])}
+Фокус анализа: {getattr(run, 'focus_mode', 'balanced')}
+Предпочитать ниши без игрового аккаунта: {getattr(run, 'prefer_no_account', False)}
+Мин. конкурентов в нише: {getattr(run, 'min_competition', 0) or 'любое'}
+Макс. цена лота: {getattr(run, 'max_price', None) or 'без ограничений'} ₽
 
 Рассуждай ВНУТРИ, наружу только JSON.
 Формат:
-{
+{{
   "selected_ids": ["81", "119"],
   "reasoning": [
-    {"node_id": "81", "why": "...", "score": 0.92, "hypothesis": "digital|resell|service|classic"}
+    {{"node_id": "81", "why": "...", "score": 0.92, "hypothesis": "digital|resell|service|classic"}}
   ]
-}
+}}
 Критерии:
 - спрос
 - возможность продать БЕЗ владения игровым аккаунтом/ресурсом
-- возможность создать цифровой файл
+
 - возможность безопасной перепродажи
 - адекватная конкуренция
 - быстрая оборачиваемость"""
@@ -510,7 +513,7 @@ class AgentOrchestrator:
         }
 
     @classmethod
-    async def _generate_for_category(cls, db: AsyncSession, run_id: int, item: Dict[str, Any]) -> List[GeneratedLot]:
+    async def _generate_for_category(cls, db: AsyncSession, run_id: int, item: Dict[str, Any], run: Any = None) -> List[GeneratedLot]:
         g_name = item["game_name"]
         sub_name = item["subcategory_name"]
         ctx = item["category_context"]
@@ -518,6 +521,19 @@ class AgentOrchestrator:
         market = item["market"]
         offers = item.get("offers", [])
         primary_type = item.get("primary_type", "classic")
+
+        # Применяем фильтр разрешённых типов лотов
+        allowed_types = run.lot_types_list if run else ["classic", "digital", "resell", "service"]
+        if primary_type not in allowed_types:
+            # Берём первый разрешённый тип как fallback
+            primary_type = allowed_types[0] if allowed_types else "classic"
+
+        # Настройки из run
+        price_strategy_override = getattr(run, "price_strategy", "auto") if run else "auto"
+        generate_seo = getattr(run, "generate_seo", True) if run else True
+        min_margin_pct = getattr(run, "min_margin_pct", 10.0) if run else 10.0
+        max_price = getattr(run, "max_price", None) if run else None
+        focus_mode = getattr(run, "focus_mode", "balanced") if run else "balanced"
 
         await cls.update_agent_state(db, run_id, cls.SUB_SUPPLY_STRATEGIST, "running", "План поставки", parent_agent=cls.AGENT_GENERATOR, category_context=ctx, progress=15)
         supply_plan = analysis.get("easy_supplies", "")
@@ -627,18 +643,44 @@ class AgentOrchestrator:
         for d in draft_lots:
             p = priced_map.get(d.get("title"), {})
             lot_type = d.get("lot_type") or primary_type or "classic"
+
+            # Фильтр: скипаем тип, не входящий в allowed_types
+            if lot_type not in allowed_types:
+                continue
+
             fallback_price = market["median"] or market["avg"] or 10.0
             if lot_type == "resell" and resell_buy_price:
                 fallback_price = max(fallback_price, round(resell_buy_price * 1.20, 2))
             price = float(p.get("price", fallback_price))
-            strategy = p.get("strategy", "median")
+
+            # Применяем price_strategy_override (если не auto — форсируем стратегию)
+            if price_strategy_override and price_strategy_override != "auto":
+                if price_strategy_override == "undercut":
+                    price = round(min(market["median"] or price, market["min"] or price) * 0.92, 2)
+                elif price_strategy_override == "premium":
+                    price = round((market["median"] or price) * 1.15, 2)
+                elif price_strategy_override == "median":
+                    price = round(market["median"] or price, 2)
+                price = max(price, 1.0)
+
+            # Применяем max_price
+            if max_price and price > max_price:
+                price = max_price
+
+            # Фильтр по минимальной марже для resell
+            if lot_type == "resell" and resell_margin is not None:
+                if resell_margin < min_margin_pct:
+                    continue  # Маржа ниже порога — пропускаем
+
+            strategy = p.get("strategy", price_strategy_override if price_strategy_override != "auto" else "median")
+            seo_kw = d.get("seo_keywords", []) if generate_seo else []
             fields_json = {
                 "fields[summary][ru]": d.get("title", ""),
                 "fields[desc][ru]": d.get("description", ""),
                 "fields[payment_msg][ru]": "Спасибо за покупку! Инструкция или выдача будет отправлена автоматически.",
                 "price": str(int(price)) if price >= 1 else str(price),
                 "amount": str(int(d.get("amount", 10))),
-                "seo_keywords": d.get("seo_keywords", []),
+                "seo_keywords": seo_kw,
                 "lot_type": lot_type,
             }
             lot = GeneratedLot(
@@ -732,7 +774,7 @@ class AgentOrchestrator:
                 raise RuntimeError("No categories in DB")
 
             await cls.update_agent_state(db, run_id, cls.AGENT_SELECTOR, "running", "Отбор категорий", progress=15)
-            selected_categories = await cls._selector_phase(db, run_id, all_categories, run.limit_categories, tavily_key, manual_node_ids)
+            selected_categories = await cls._selector_phase(db, run_id, all_categories, run.limit_categories, tavily_key, manual_node_ids, run=run)
             await cls.update_agent_state(db, run_id, cls.AGENT_SELECTOR, "completed", f"Выбрано {len(selected_categories)}", progress=100)
             await cls.update_run_progress(db, run_id, 0, len(selected_categories))
 
@@ -769,7 +811,7 @@ class AgentOrchestrator:
             await cls.update_agent_state(db, run_id, cls.AGENT_GENERATOR, "running", "Генерация лотов", progress=20)
             all_lots: List[GeneratedLot] = []
             for item in analyzed_results:
-                all_lots.extend(await cls._generate_for_category(db, run_id, item))
+                all_lots.extend(await cls._generate_for_category(db, run_id, item, run=run))
             await cls.update_agent_state(db, run_id, cls.AGENT_GENERATOR, "completed", f"Сгенерировано {len(all_lots)}", progress=100)
 
             await cls.update_agent_state(db, run_id, cls.AGENT_PUBLISHER, "running", "Финализация", progress=30)

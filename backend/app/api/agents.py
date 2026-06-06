@@ -52,6 +52,15 @@ class AgentRunCreate(BaseModel):
     target_account_id: Optional[int] = None
     tavily_api_key: Optional[str] = None
     manual_node_ids: Optional[List[str]] = None
+    # Настройки анализа
+    lot_types: Optional[List[str]] = None          # ['classic','digital','resell','service']
+    focus_mode: Optional[str] = "balanced"         # balanced|profit|volume|speed
+    price_strategy: Optional[str] = "auto"         # auto|undercut|median|premium
+    min_margin_pct: Optional[float] = 10.0         # мин. маржа % для resell
+    generate_seo: Optional[bool] = True
+    prefer_no_account: Optional[bool] = False
+    max_price: Optional[float] = None
+    min_competition: Optional[int] = None
 
 
 class RetrySubAgentPayload(BaseModel):
@@ -80,6 +89,14 @@ async def start_agents_analysis(
         user_id=current_user.id,
         categories_done=0,
         categories_total=0,
+        lot_types=",".join(payload.lot_types) if payload.lot_types else "classic,digital,resell,service",
+        focus_mode=payload.focus_mode or "balanced",
+        price_strategy=payload.price_strategy or "auto",
+        min_margin_pct=payload.min_margin_pct if payload.min_margin_pct is not None else 10.0,
+        generate_seo=payload.generate_seo if payload.generate_seo is not None else True,
+        prefer_no_account=payload.prefer_no_account or False,
+        max_price=payload.max_price,
+        min_competition=payload.min_competition,
     )
     db.add(run)
     await db.commit()

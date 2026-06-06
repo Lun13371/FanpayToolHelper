@@ -5,7 +5,8 @@ import type { AgentCardTab, LaunchMode } from './agents/types';
 import type { AgentLog, AgentRun, AgentState, GeneratedLot } from '../../types';
 import { INITIAL_AGENT_STATES } from './agents/constants';
 import { AgentsHero } from './agents/AgentsHero';
-import { LaunchSettingsPanel } from './agents/LaunchSettingsPanel';
+import { LaunchSettingsPanel, DEFAULT_PREFS } from './agents/LaunchSettingsPanel';
+import type { AnalysisPrefs } from './agents/LaunchSettingsPanel';
 import { AgentsPipeline } from './agents/AgentsPipeline';
 import { AgentsLogsPanel } from './agents/AgentsLogsPanel';
 import { AgentsUniverse } from './agents/AgentsUniverse';
@@ -44,6 +45,7 @@ export default function AgentsTab() {
   const [tavilyKey, setTavilyKey] = useState<string>('');
   const [targetAccountId, setTargetAccountId] = useState<number | null>(null);
   const [manualNodeIds, setManualNodeIds] = useState<string[]>([]);
+  const [prefs, setPrefs] = useState<AnalysisPrefs>(DEFAULT_PREFS);
 
   const [activeRun, setActiveRun] = useState<AgentRun | null>(null);
   const [agentStates, setAgentStates] = useState<Record<string, AgentState>>(INITIAL_AGENT_STATES);
@@ -252,6 +254,14 @@ export default function AgentsTab() {
           tavily_api_key: tavilyKey || undefined,
           target_account_id: targetAccountId,
           manual_node_ids: mode === 'manual' && manualNodeIds.length > 0 ? manualNodeIds : undefined,
+          lot_types: prefs.lot_types,
+          focus_mode: prefs.focus_mode,
+          price_strategy: prefs.price_strategy,
+          min_margin_pct: prefs.min_margin_pct,
+          generate_seo: prefs.generate_seo,
+          prefer_no_account: prefs.prefer_no_account,
+          max_price: prefs.max_price || undefined,
+          min_competition: prefs.min_competition || undefined,
         }),
       });
       if (res.ok) {
@@ -369,11 +379,13 @@ export default function AgentsTab() {
         accounts={accounts}
         isStarting={isStarting}
         manualNodeIds={manualNodeIds}
+        prefs={prefs}
         onModeChange={setMode}
         onLimitChange={(value) => setLimit(Math.min(12, Math.max(2, value)))}
         onTavilyKeyChange={setTavilyKey}
         onTargetAccountChange={setTargetAccountId}
         onManualNodeIdsChange={setManualNodeIds}
+        onPrefsChange={setPrefs}
         onSubmit={handleStartAnalysis}
       />
 
