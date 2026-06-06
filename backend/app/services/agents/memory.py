@@ -35,7 +35,8 @@ class SemanticMemoryService:
             "Content-Type": "application/json"
         }
         payload = {
-            "model": "accounts/fireworks/models/qwen3-embedding-8b",
+            # Правильный ID для Fireworks embeddings API (без accounts/fireworks/models/ prefix)
+            "model": "fireworks/qwen3-embedding-8b",   # $0.10/M, serverless ✅
             "input": text
         }
         
@@ -135,11 +136,18 @@ class SemanticMemoryService:
             
             results_with_scores = []
             for insight in all_insights:
-                if not insight.embedding:
+                emb = insight.embedding
+                # pgvector возвращает numpy array — нельзя делать bool(array), только is None
+                if emb is None:
+                    continue
+                try:
+                    emb_list = list(emb)
+                    if not emb_list:
+                        continue
+                except Exception:
                     continue
                     
-                # Вычисляем сходство
-                score = cls._cosine_similarity(vector, insight.embedding)
+                score = cls._cosine_similarity(vector, emb_list)
                 if score >= threshold:
                     results_with_scores.append((insight, score))
                     

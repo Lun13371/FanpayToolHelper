@@ -214,16 +214,20 @@ class AIService:
                     ]
                 })
 
-        # Модели по умолчанию для текстовых запросов (в порядке приоритета)
-        # Kimi K2.5 — оптимальный выбор: молниеносно быстрая и невероятно умная модель на вашем ключе!
+        # Актуальные модели Fireworks (June 2026) для чат-ответов
+        # kimi-k2-instruct: $0.60/M, 262k ctx — лучший для диалогов
+        # minimax-m2p5: $0.30/M, 196k ctx — дешёвый fallback
+        # gpt-oss-20b: $0.07/M, 131k ctx — самый дешёвый fallback
         text_models = [
-            "accounts/fireworks/models/kimi-k2p5",
-            "accounts/fireworks/models/gpt-oss-120b",
-            "accounts/fireworks/models/deepseek-v4-pro"
+            "accounts/fireworks/models/kimi-k2-instruct",     # $0.60/M, 262k ctx ✅
+            "accounts/fireworks/models/minimax-m2p5",          # $0.30/M, 196k ctx ✅
+            "accounts/fireworks/models/gpt-oss-20b",           # $0.07/M, 131k ctx ✅
         ]
         
+        # Vision: Kimi K2.6 поддерживает Vision ($0.95/M), MiniMax M2.7 ($0.30/M)
         vision_models = [
-            "accounts/fireworks/models/qwen2-5-vl-72b-instruct"
+            "accounts/fireworks/models/kimi-k2p6",             # $0.95/M Vision ✅
+            "accounts/fireworks/models/minimax-m2p7",          # $0.30/M Vision ✅
         ]
         
         candidate_models = vision_models if screenshot_base64 else text_models
@@ -374,10 +378,9 @@ class AIService:
         ]
 
         candidate_models = [
-            "accounts/fireworks/models/kimi-k2p5",
-            "accounts/fireworks/models/llama-v3p3-70b-instruct",
-            "accounts/fireworks/models/llama-v3p1-70b-instruct",
-            "accounts/fireworks/models/qwen2p5-72b-instruct"
+            "accounts/fireworks/models/kimi-k2-instruct",     # $0.60/M, 262k ctx ✅
+            "accounts/fireworks/models/minimax-m2p5",          # $0.30/M, 196k ctx ✅
+            "accounts/fireworks/models/gpt-oss-20b",           # $0.07/M, 131k ctx ✅
         ]
 
         max_attempts = 3

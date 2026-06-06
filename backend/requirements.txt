@@ -16,5 +16,4 @@ beautifulsoup4>=4.12.3
 socksio>=1.0.0
 pgvector>=0.2.5
 duckduckgo_search>=5.0.0
-
-
+ddgs>=9.0.0

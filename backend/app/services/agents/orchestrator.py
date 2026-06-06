@@ -198,12 +198,33 @@ class AgentOrchestrator:
         parent_agent: Optional[str] = None,
         category_context: Optional[str] = None,
     ) -> Dict[str, Any]:
-        candidate_models = [
-            "accounts/fireworks/models/kimi-k2p5",
-            "accounts/fireworks/models/llama-v3p3-70b-instruct",
-            "accounts/fireworks/models/llama-v3p1-70b-instruct",
-            "accounts/fireworks/models/qwen2p5-72b-instruct",
-        ]
+        # Подбираем модели по типу агента
+        # Дорогие/умные — для логических задач (ранжирование, ценообразование)
+        # Дешёвые/быстрые — для генерации текста, скрапинга
+        _smart_agents = {cls.SUB_CATEGORY_RANKER, cls.AGENT_SELECTOR, cls.SUB_PRICE_ANALYZER, cls.AGENT_MEMORY}
+        _cheap_agents = {cls.SUB_MARKET_SCRAPER, cls.SUB_LOT_WRITER, cls.SUB_COPYWRITER, cls.AGENT_GENERATOR}
+
+        if agent_name in _smart_agents:
+            # Умные задачи: Kimi K2 Instruct → MiniMax M2.5 → GPT OSS 20B
+            candidate_models = [
+                "accounts/fireworks/models/kimi-k2-instruct",    # $0.60/M, 262k ctx ✅
+                "accounts/fireworks/models/minimax-m2p5",         # $0.30/M, 196k ctx ✅
+                "accounts/fireworks/models/gpt-oss-20b",          # $0.07/M, 131k ctx ✅
+            ]
+        elif agent_name in _cheap_agents:
+            # Генерация текста/лотов: MiniMax M2.5 (дешёво) → GPT OSS 20B → Kimi K2
+            candidate_models = [
+                "accounts/fireworks/models/minimax-m2p5",         # $0.30/M, 196k ctx ✅
+                "accounts/fireworks/models/gpt-oss-20b",          # $0.07/M, 131k ctx ✅
+                "accounts/fireworks/models/kimi-k2-instruct",     # $0.60/M, fallback ✅
+            ]
+        else:
+            # По умолчанию: балансируем цену и качество
+            candidate_models = [
+                "accounts/fireworks/models/minimax-m2p5",         # $0.30/M ✅
+                "accounts/fireworks/models/kimi-k2-instruct",     # $0.60/M ✅
+                "accounts/fireworks/models/llama-v3p3-70b-instruct", # $0.90/M ✅
+            ]
         messages = [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
