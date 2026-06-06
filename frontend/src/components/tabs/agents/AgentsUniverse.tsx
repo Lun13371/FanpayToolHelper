@@ -86,12 +86,13 @@ const SVG_LINKS = [
   { x1: 280, y1: 260, x2: 960, y2: 720 },
 ];
 
-const STATUS_CFG = {
+const STATUS_CFG: Record<AgentState['status'], { label: string; color: string; badge: string }> = {
   pending:   { label: 'Ожидание', color: '#64748b', badge: 'bg-slate-800/60 text-slate-400 border-white/5' },
   running:   { label: 'Работает', color: '#22d3ee', badge: 'bg-brand-cyan/10 text-brand-cyan border-brand-cyan/20' },
   completed: { label: 'Готов',    color: '#34d399', badge: 'bg-emerald-400/10 text-emerald-300 border-emerald-400/20' },
   failed:    { label: 'Ошибка',   color: '#fb7185', badge: 'bg-rose-400/10 text-rose-300 border-rose-400/20' },
-} as const;
+  skipped:   { label: 'Пропуск',  color: '#f59e0b', badge: 'bg-amber-400/10 text-amber-300 border-amber-400/20' },
+};
 
 function normStatus(s?: AgentState): AgentState['status'] { return s?.status ?? 'pending'; }
 function filterLogs(logs: AgentLog[], names: string[]) {
@@ -339,7 +340,7 @@ export function AgentsUniverse({ activeRun, agentStates, logs, generatedLots }: 
                       stroke="rgba(99,102,241,0.3)" strokeWidth="1" strokeDasharray="3 3" />
                   ))}
                   {decorated.map(ag => {
-                    const cols: Record<AgentState['status'], string> = { pending:'#475569', running:'#22d3ee', completed:'#34d399', failed:'#fb7185' };
+                    const cols: Record<AgentState['status'], string> = { pending:'#475569', running:'#22d3ee', completed:'#34d399', failed:'#fb7185', skipped:'#f59e0b' };
                     return <circle key={ag.key} cx={ag.x*mapS} cy={ag.y*mapS} r={4} fill={cols[normStatus(ag.state)]} opacity={0.9} />;
                   })}
                 </svg>

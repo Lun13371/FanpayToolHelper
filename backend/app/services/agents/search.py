@@ -2,7 +2,10 @@ import logging
 from typing import List, Dict, Any, Optional
 import httpx
 from bs4 import BeautifulSoup
-from duckduckgo_search import DDGS
+try:
+    from ddgs import DDGS
+except ImportError:
+    from duckduckgo_search import DDGS  # fallback для старых версий
 
 logger = logging.getLogger("fanpay.agents.search")
 

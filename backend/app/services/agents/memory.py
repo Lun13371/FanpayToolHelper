@@ -112,10 +112,10 @@ class SemanticMemoryService:
             return list(res.scalars().all())
             
         try:
-            # Пытаемся выполнить векторный поиск средствами СУБД (pgvector оператор <=> означает косинусную дистанцию)
-            # Чем меньше косинусное расстояние, тем больше сходство. Дистанция лежит в пределах от 0 до 2.
-            # Сходство = 1 - дистанция.
-            # Порог косинусного расстояния: distance < (1 - threshold)
+            # Пытаемся выполнить векторный поиск средствами СУБД
+            # Проверяем что embedding не пустой и это список float
+            if not isinstance(vector, (list, tuple)) or len(vector) == 0:
+                raise ValueError("invalid embedding shape")
             distance_threshold = 1.0 - threshold
             stmt = (
                 select(AgentInsight)

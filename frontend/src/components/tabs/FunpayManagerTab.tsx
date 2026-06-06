@@ -366,7 +366,7 @@ export default function FunpayManagerTab() {
                     {currentAccount.is_active ? '● БОТ АКТИВЕН' : '○ БОТ ВЫКЛЮЧЕН'}
                   </span>
                   <span className="text-[7.5px] text-slate-500 font-extrabold uppercase tracking-wider leading-none mt-1">
-                    Синхрон: {getTimeAgo(currentAccount.last_synced)}
+                    Синхрон: {getTimeAgo(currentAccount.last_synced ?? undefined)}
                   </span>
                 </div>
               )}
@@ -520,7 +520,7 @@ export default function FunpayManagerTab() {
                     </button>
                   </div>
                   <span className="text-[7.5px] text-slate-500 font-extrabold uppercase tracking-wide">
-                    Синхрон: {getTimeAgo(currentAccount?.last_synced)}
+                    Синхрон: {getTimeAgo(currentAccount?.last_synced ?? undefined)}
                   </span>
                 </div>
               </div>

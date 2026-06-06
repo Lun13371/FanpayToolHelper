@@ -298,7 +298,7 @@ export default function LotsSubTab({
   // Получить товары автовыдачи нашего бота
   const fetchDeliveryItems = async (accId: number) => {
     try {
-      const res = await fetch(`${API_URL}/api/v1/delivery?account_id=${accId}`, {
+      const res = await fetch(`${API_URL}/api/v1/delivery/items?account_id=${accId}`, {
         headers: { Authorization: `Bearer ${token}` }
       });
       if (res.ok) {
@@ -690,7 +690,7 @@ export default function LotsSubTab({
                           <div className="flex items-center gap-1.5">
                             <span className="text-slate-500">Последнее поднятие:</span>
                             <span className="text-slate-300" title={currentAccount?.last_raised ? new Date(currentAccount.last_raised).toLocaleString() : ''}>
-                              {getTimeAgo(currentAccount?.last_raised)}
+                              {getTimeAgo(currentAccount?.last_raised ?? undefined)}
                             </span>
                           </div>
                           <div className="flex items-center gap-1.5 border-l border-white/5 pl-4">

@@ -13,6 +13,7 @@ from app.api.accounts import verify_account_access
 from app.services.log_broadcast import log_broadcast_manager
 
 router = APIRouter(tags=["Логи ботов"])
+ws_router = APIRouter(tags=["WebSocket логи"])
 
 class LogResponse(BaseModel):
     id: int
@@ -53,8 +54,8 @@ async def get_account_logs(
 # WEBSOCKET ЭНДПОИНТ ДЛЯ ЖИВЫХ ЛОГОВ
 # =========================================================================
 
-# WebSocket эндпоинт вынесен без префикса, так как WS протокол часто обрабатывается отдельно
-@router.websocket("/ws/logs/{account_id}")
+# WebSocket эндпоинт на отдельном роутере (без /api/v1 prefix)
+@ws_router.websocket("/ws/logs/{account_id}")
 async def websocket_logs_endpoint(
     websocket: WebSocket,
     account_id: int,

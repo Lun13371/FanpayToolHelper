@@ -12,7 +12,7 @@ from app.api.lot_templates import router as templates_router
 from app.api.chats import router as chats_router
 from app.api.delivery import router as delivery_router
 from app.api.ai_keys import router as ai_keys_router
-from app.api.logs import router as logs_router
+from app.api.logs import router as logs_router, ws_router as logs_ws_router
 from app.api.agents import router as agents_router
 
 # Настраиваем логирование для приложения
@@ -52,7 +52,8 @@ app.include_router(chats_router, prefix="/api/v1")
 app.include_router(delivery_router, prefix="/api/v1")
 app.include_router(ai_keys_router, prefix="/api/v1")
 app.include_router(agents_router, prefix="/api/v1")
-app.include_router(logs_router) # Роутер логов содержит WebSockets, подключаем напрямую
+app.include_router(logs_router, prefix="/api/v1")     # REST /api/v1/logs
+app.include_router(logs_ws_router)                    # WebSocket /ws/logs/{account_id}
 
 
 # =========================================================================
@@ -70,7 +71,24 @@ async def startup_event():
 
     logger.info("Синхронизация и запуск ботов для активных аккаунтов...")
     await scheduler_manager.sync_all_active_accounts()
-    
+
+    # Фиксим зависшие agent_runs со статусом 'running' после рестарта
+    # (ACTIVE_TASKS очищается при перезапуске процесса, задачи теряются)
+    from app.database import async_session_maker
+    from app.models.agents import AgentRun
+    from sqlmodel import select
+    from datetime import datetime as _dt
+    async with async_session_maker() as session:
+        res = await session.execute(select(AgentRun).where(AgentRun.status == "running"))
+        stale_runs = res.scalars().all()
+        if stale_runs:
+            logger.warning(f"Найдено {len(stale_runs)} зависших запусков — сбрасываем статус в 'failed'")
+            for r in stale_runs:
+                r.status = "failed"
+                r.completed_at = _dt.utcnow()
+                session.add(r)
+            await session.commit()
+
     logger.info("Приложение Fanpay Helper успешно запущено и готово к работе!")
 
 

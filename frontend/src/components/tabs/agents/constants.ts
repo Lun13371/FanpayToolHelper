@@ -2,11 +2,11 @@ import type { AgentState, GeneratedLot } from '../../../types';
 import type { AgentNodeKey, InsightItem, NodePosition, SimulationStep } from './types';
 
 export const INITIAL_AGENT_STATES: Record<string, AgentState> = {
-  CategorySelector: { status: 'pending', tokens_used: 0 },
-  Memory:           { status: 'pending', tokens_used: 0 },
-  ListingAnalyzer:  { status: 'pending', tokens_used: 0 },
-  LotGenerator:     { status: 'pending', tokens_used: 0 },
-  Publisher:        { status: 'pending', tokens_used: 0 },
+  CategorySelector: { agent_name: 'CategorySelector', status: 'pending', tokens_used: 0 },
+  Memory:           { agent_name: 'Memory', status: 'pending', tokens_used: 0 },
+  ListingAnalyzer:  { agent_name: 'ListingAnalyzer', status: 'pending', tokens_used: 0 },
+  LotGenerator:     { agent_name: 'LotGenerator', status: 'pending', tokens_used: 0 },
+  Publisher:        { agent_name: 'Publisher', status: 'pending', tokens_used: 0 },
 };
 
 export const INITIAL_NODE_POSITIONS: Record<AgentNodeKey, NodePosition> = {

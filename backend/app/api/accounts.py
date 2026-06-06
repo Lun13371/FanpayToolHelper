@@ -138,7 +138,7 @@ async def list_accounts(
     # Фильтруем чувствительные данные для менеджеров
     response_list = []
     for acc in accounts:
-        resp = AccountResponse.from_orm(acc)
+        resp = AccountResponse.model_validate(acc, from_attributes=True)
         if current_user.role != UserRole.MANAGER:
             # Администраторы и владельцы видят токен и прокси
             resp.golden_key = acc.golden_key

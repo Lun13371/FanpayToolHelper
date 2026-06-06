@@ -1,83 +1,213 @@
 import logging
 import json
 import asyncio
-import random
 from datetime import datetime
-from typing import List, Dict, Any, Optional
-from sqlmodel import select
-from sqlalchemy.ext.asyncio import AsyncSession
+from statistics import median
+from typing import List, Dict, Any, Optional, Tuple
+
 import litellm
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlmodel import select
 
 from app.models.account import FanpayAccount
 from app.models.global_category import FunpayGlobalCategory
-from app.models.agents import AgentRun, AgentState, AgentLog, GeneratedLot, AgentInsight
+from app.models.agents import AgentRun, AgentState, AgentLog, GeneratedLot
 from app.services.ai import AIService
 from app.services.fanpay_client import FanpayClient
 from app.services.agents.search import AgentSearchService
 from app.services.agents.memory import SemanticMemoryService
 from app.services.agents.scraper import AgentScraperService
+from app.database import async_session_maker
 
 logger = logging.getLogger("fanpay.agents.orchestrator")
-
-# Реестр активных asyncio-задач: run_id -> Task
-# Используется для отмены через cancel()
 ACTIVE_TASKS: Dict[int, asyncio.Task] = {}
 
 
 class AgentOrchestrator:
-    """
-    Оркестратор агентной системы анализа FunPay.
-    5 агентов: CategorySelector, Memory, ListingAnalyzer, LotGenerator, Publisher
-    Поддерживает: отмену задачи, изоляцию по user_id, параллельный анализ категорий.
-    """
-
-    AGENT_SELECTOR  = "CategorySelector"
-    AGENT_MEMORY    = "Memory"
-    AGENT_ANALYZER  = "ListingAnalyzer"
+    AGENT_SELECTOR = "CategorySelector"
+    AGENT_MEMORY = "Memory"
+    AGENT_ANALYZER = "ListingAnalyzer"
     AGENT_GENERATOR = "LotGenerator"
     AGENT_PUBLISHER = "Publisher"
 
-    ALL_AGENTS = ["CategorySelector", "Memory", "ListingAnalyzer", "LotGenerator", "Publisher"]
+    SUB_TREND_RESEARCHER = "TrendResearcher"
+    SUB_MEMORY_READER = "MemoryReader"
+    SUB_CATEGORY_RANKER = "CategoryRanker"
 
-    # ── Helpers ──────────────────────────────────────────────────────────────
+    SUB_MARKET_SCRAPER = "MarketScraper"
+    SUB_WEB_RESEARCHER = "WebResearcher"
+    SUB_MARGIN_ANALYST = "MarginAnalyst"
+    SUB_INSIGHT_WRITER = "InsightWriter"
+
+    SUB_SUPPLY_STRATEGIST = "SupplyStrategist"
+    SUB_COPYWRITER = "CopywriterAgent"
+    SUB_PRICING = "PricingAgent"
+    SUB_SEO = "SEOAgent"
+
+    SUB_QUALITY = "QualityChecker"
+    SUB_DUPLICATE = "DuplicateFilter"
+    SUB_EXPORTER = "TemplateExporter"
+
+    MAIN_AGENTS = [AGENT_SELECTOR, AGENT_MEMORY, AGENT_ANALYZER, AGENT_GENERATOR, AGENT_PUBLISHER]
+
+    SUBAGENTS_BY_PARENT = {
+        AGENT_SELECTOR: [SUB_TREND_RESEARCHER, SUB_MEMORY_READER, SUB_CATEGORY_RANKER],
+        AGENT_ANALYZER: [SUB_MARKET_SCRAPER, SUB_WEB_RESEARCHER, SUB_MARGIN_ANALYST, SUB_INSIGHT_WRITER],
+        AGENT_GENERATOR: [SUB_SUPPLY_STRATEGIST, SUB_COPYWRITER, SUB_PRICING, SUB_SEO],
+        AGENT_PUBLISHER: [SUB_QUALITY, SUB_DUPLICATE, SUB_EXPORTER],
+    }
 
     @classmethod
-    async def log_agent(cls, db: AsyncSession, run_id: int, agent_name: str, message: str, level: str = "info"):
-        log_entry = AgentLog(run_id=run_id, agent_name=agent_name, message=message, level=level)
+    async def notify(cls, db: AsyncSession, channel: str, payload: Dict[str, Any]):
+        try:
+            await db.execute(text("SELECT pg_notify(:channel, :payload)"), {
+                "channel": channel,
+                "payload": json.dumps(payload, ensure_ascii=False, default=str)
+            })
+            await db.commit()
+        except Exception as e:
+            logger.warning(f"pg_notify failed: {e}")
+
+    @classmethod
+    async def log_agent(
+        cls,
+        db: AsyncSession,
+        run_id: int,
+        agent_name: str,
+        message: str,
+        level: str = "info",
+        parent_agent: Optional[str] = None,
+        category_context: Optional[str] = None,
+    ):
+        log_entry = AgentLog(
+            run_id=run_id,
+            agent_name=agent_name,
+            parent_agent=parent_agent,
+            category_context=category_context,
+            message=message,
+            level=level,
+        )
         db.add(log_entry)
         await db.commit()
-        logger.info(f"[{agent_name}] {level.upper()}: {message}")
+        await db.refresh(log_entry)
+        await cls.notify(db, f"agent_run_{run_id}", {
+            "type": "log",
+            "id": log_entry.id,
+            "agent_name": agent_name,
+            "parent_agent": parent_agent,
+            "category_context": category_context,
+            "message": message,
+            "level": level,
+            "created_at": log_entry.created_at.strftime('%H:%M:%S')
+        })
+
+    @classmethod
+    async def update_run_progress(cls, db: AsyncSession, run_id: int, done: Optional[int] = None, total: Optional[int] = None):
+        run = await db.get(AgentRun, run_id)
+        if not run:
+            return
+        if done is not None:
+            run.categories_done = done
+        if total is not None:
+            run.categories_total = total
+        db.add(run)
+        await db.commit()
+        await cls.notify(db, f"agent_run_{run_id}", {
+            "type": "progress",
+            "categories_done": run.categories_done,
+            "categories_total": run.categories_total,
+        })
 
     @classmethod
     async def update_agent_state(
-        cls, db: AsyncSession, run_id: int, agent_name: str,
-        status: str, current_task: Optional[str] = None, tokens_used: int = 0
+        cls,
+        db: AsyncSession,
+        run_id: int,
+        agent_name: str,
+        status: str,
+        current_task: Optional[str] = None,
+        tokens_used: int = 0,
+        parent_agent: Optional[str] = None,
+        category_context: Optional[str] = None,
+        progress: Optional[int] = None,
+        retry_count: Optional[int] = None,
+        error_message: Optional[str] = None,
     ):
-        stmt = select(AgentState).where(AgentState.run_id == run_id, AgentState.agent_name == agent_name)
+        stmt = select(AgentState).where(
+            AgentState.run_id == run_id,
+            AgentState.agent_name == agent_name,
+            AgentState.parent_agent == parent_agent,
+            AgentState.category_context == category_context,
+        )
         res = await db.execute(stmt)
         state = res.scalar_one_or_none()
         if not state:
-            state = AgentState(run_id=run_id, agent_name=agent_name, status=status,
-                               current_task=current_task, tokens_used=tokens_used, updated_at=datetime.utcnow())
+            state = AgentState(
+                run_id=run_id,
+                agent_name=agent_name,
+                parent_agent=parent_agent,
+                category_context=category_context,
+                status=status,
+                current_task=current_task,
+                tokens_used=tokens_used,
+                progress=progress or 0,
+                retry_count=retry_count or 0,
+                error_message=error_message,
+                updated_at=datetime.utcnow(),
+            )
         else:
             state.status = status
             if current_task is not None:
                 state.current_task = current_task
+            if progress is not None:
+                state.progress = progress
+            if retry_count is not None:
+                state.retry_count = retry_count
+            if error_message is not None:
+                state.error_message = error_message
             state.tokens_used += tokens_used
             state.updated_at = datetime.utcnow()
+
         db.add(state)
         await db.commit()
+        await db.refresh(state)
+
+        await cls.notify(db, f"agent_run_{run_id}", {
+            "type": "state",
+            "agent_name": agent_name,
+            "parent_agent": parent_agent,
+            "category_context": category_context,
+            "status": status,
+            "current_task": state.current_task,
+            "tokens_used": state.tokens_used,
+            "progress": state.progress,
+            "retry_count": state.retry_count,
+            "error_message": state.error_message,
+            "updated_at": state.updated_at.isoformat(),
+        })
 
     @classmethod
-    async def call_llm_json(cls, db: AsyncSession, system_prompt: str, user_prompt: str,
-                            agent_name: str, run_id: int) -> Dict[str, Any]:
+    async def call_llm_json(
+        cls,
+        db: AsyncSession,
+        system_prompt: str,
+        user_prompt: str,
+        agent_name: str,
+        run_id: int,
+        parent_agent: Optional[str] = None,
+        category_context: Optional[str] = None,
+    ) -> Dict[str, Any]:
         candidate_models = [
             "accounts/fireworks/models/kimi-k2p5",
             "accounts/fireworks/models/llama-v3p3-70b-instruct",
             "accounts/fireworks/models/llama-v3p1-70b-instruct",
-            "accounts/fireworks/models/qwen2p5-72b-instruct"
+            "accounts/fireworks/models/qwen2p5-72b-instruct",
         ]
-        messages = [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}]
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ]
         last_exception = None
 
         for model in candidate_models:
@@ -85,432 +215,476 @@ class AgentOrchestrator:
             if not key_obj:
                 raise RuntimeError("Нет активных ключей ИИ в базе данных")
             try:
-                logger.info(f"[{agent_name}] Попытка вызова модели {model}...")
                 response = await litellm.acompletion(
-                    model=model, custom_llm_provider="fireworks_ai",
-                    messages=messages, api_key=key_obj.key_value,
-                    temperature=0.2, max_tokens=4000,
-                    response_format={"type": "json_object"}, timeout=120.0
+                    model=model,
+                    custom_llm_provider="fireworks_ai",
+                    messages=messages,
+                    api_key=key_obj.key_value,
+                    temperature=0.2,
+                    max_tokens=4000,
+                    response_format={"type": "json_object"},
+                    timeout=120.0,
                 )
                 await AIService.mark_key_success(db, key_obj)
-                usage = getattr(response, 'usage', None)
+                usage = getattr(response, "usage", None)
                 tokens = usage.total_tokens if usage else 0
-                await cls.update_agent_state(db, run_id, agent_name, "running", tokens_used=tokens)
-                stmt = select(AgentRun).where(AgentRun.id == run_id)
-                run_res = await db.execute(stmt)
-                run_obj = run_res.scalar_one()
-                run_obj.total_cost_tokens += tokens
-                db.add(run_obj)
-                await db.commit()
+                await cls.update_agent_state(
+                    db, run_id, agent_name, "running",
+                    tokens_used=tokens,
+                    parent_agent=parent_agent,
+                    category_context=category_context,
+                )
+                run_obj = await db.get(AgentRun, run_id)
+                if run_obj:
+                    run_obj.total_cost_tokens += tokens
+                    db.add(run_obj)
+                    await db.commit()
+                    await cls.notify(db, f"agent_run_{run_id}", {
+                        "type": "run_meta",
+                        "total_cost_tokens": run_obj.total_cost_tokens,
+                        "run_status": run_obj.status,
+                    })
                 raw_text = response.choices[0].message.content.strip()
                 return json.loads(raw_text)
             except asyncio.CancelledError:
-                raise  # пробрасываем отмену наверх
+                raise
             except Exception as e:
-                logger.warning(f"Ошибка вызова модели {model} для {agent_name}: {e}")
                 await AIService.mark_key_failure(db, key_obj)
                 last_exception = e
                 continue
+        raise last_exception if last_exception else RuntimeError("Все модели-кандидаты вернули ошибку")
 
-        raise last_exception if last_exception else RuntimeError("Все модели-кандидаты вернули ошибку.")
+    @staticmethod
+    def _ctx(cat: FunpayGlobalCategory) -> str:
+        return f"{cat.game_name} / {cat.subcategory_name}"
 
-    # ── Analyse one category (параллельно) ──────────────────────────────────
+    @staticmethod
+    def _market_stats(offers: List[Dict[str, Any]]) -> Tuple[float, float, float, float]:
+        prices = sorted([float(o.get("price", 0)) for o in offers if float(o.get("price", 0)) > 0])
+        if not prices:
+            return 0.0, 0.0, 0.0, 0.0
+        return prices[0], prices[-1], sum(prices) / len(prices), median(prices)
+
+    @classmethod
+    async def _selector_phase(
+        cls,
+        db: AsyncSession,
+        run_id: int,
+        all_categories: List[FunpayGlobalCategory],
+        limit_categories: int,
+        tavily_key: Optional[str],
+        manual_node_ids: Optional[List[str]],
+    ) -> List[FunpayGlobalCategory]:
+        if manual_node_ids:
+            picked = [c for c in all_categories if str(c.node_id) in set(map(str, manual_node_ids))]
+            await cls.log_agent(db, run_id, cls.AGENT_SELECTOR, f"Ручной режим: выбрано {len(picked)} категорий.")
+            return picked[:limit_categories]
+
+        await cls.update_agent_state(db, run_id, cls.SUB_TREND_RESEARCHER, "running", "Сбор трендов", parent_agent=cls.AGENT_SELECTOR, progress=15)
+        search_results = await AgentSearchService.search(
+            "most profitable games for RMT selling funpay popular games 2026",
+            api_key=tavily_key,
+            max_results=6,
+        )
+        trend_context = "\n\n".join([f"[{i+1}] {r['title']}\n{r['content']}\nURL: {r['url']}" for i, r in enumerate(search_results)])
+        await cls.update_agent_state(db, run_id, cls.SUB_TREND_RESEARCHER, "completed", "Тренды собраны", parent_agent=cls.AGENT_SELECTOR, progress=100)
+
+        await cls.update_agent_state(db, run_id, cls.SUB_MEMORY_READER, "running", "Чтение памяти", parent_agent=cls.AGENT_SELECTOR, progress=40)
+        insights = await SemanticMemoryService.search_similar_insights(db, "profitable games high demand automation", limit=10)
+        memory_context = "\n".join([f"- {i.game_name} / {i.subcategory_name}: {i.content[:180]}" for i in insights])
+        await cls.update_agent_state(db, run_id, cls.SUB_MEMORY_READER, "completed", f"{len(insights)} инсайтов", parent_agent=cls.AGENT_SELECTOR, progress=100)
+
+        await cls.update_agent_state(db, run_id, cls.SUB_CATEGORY_RANKER, "running", "Ранжирование", parent_agent=cls.AGENT_SELECTOR, progress=60)
+        candidate_pool = sorted(all_categories, key=lambda c: c.game_name.lower())[:160]
+        available = "\n".join([f"- ID:{c.node_id} | {c.game_name} | {c.subcategory_name} | {c.category_type}" for c in candidate_pool])
+
+        system_prompt = """Ты — CategoryRanker для RMT/FunPay. Верни строго JSON.
+Задача: выбрать перспективные категории на базе веб-трендов и прошлой памяти.
+Шаги рассуждения выполняй ВНУТРИ, наружу выводи только JSON.
+Формат:
+{
+  "selected_ids": ["81", "119"],
+  "reasoning": [
+    {"node_id": "81", "why": "...", "score": 0.92}
+  ]
+}
+Критерии:
+1) стабильный спрос
+2) возможность автоматизации
+3) низкая сложность поставки
+4) конкуренция не запредельная
+5) хорошие чеки или быстрая оборачиваемость"""
+
+        user_prompt = f"""Нужно выбрать ровно {limit_categories} категорий.
+
+Веб-тренды:
+{trend_context}
+
+Память прошлых запусков:
+{memory_context}
+
+Список доступных категорий:
+{available}
+
+Верни только JSON."""
+
+        rank_json = await cls.call_llm_json(db, system_prompt, user_prompt, cls.SUB_CATEGORY_RANKER, run_id, parent_agent=cls.AGENT_SELECTOR)
+        selected_ids = [str(x) for x in rank_json.get("selected_ids", [])]
+        selected = [c for c in all_categories if str(c.node_id) in set(selected_ids)]
+        if not selected:
+            selected = candidate_pool[:limit_categories]
+        await cls.update_agent_state(db, run_id, cls.SUB_CATEGORY_RANKER, "completed", f"Выбрано {len(selected)}", parent_agent=cls.AGENT_SELECTOR, progress=100)
+        await cls.log_agent(db, run_id, cls.AGENT_SELECTOR, f"Выбрано {len(selected)} категорий: " + ", ".join([f"{c.game_name} ({c.subcategory_name})" for c in selected]))
+        return selected[:limit_categories]
 
     @classmethod
     async def _analyse_category(
-        cls, db: AsyncSession, run_id: int, cat: FunpayGlobalCategory,
-        index: int, total: int, funpay_client: Optional[FanpayClient],
-        tavily_key: Optional[str]
+        cls,
+        db: AsyncSession,
+        run_id: int,
+        cat: FunpayGlobalCategory,
+        funpay_client: Optional[FanpayClient],
+        tavily_key: Optional[str],
     ) -> Optional[Dict[str, Any]]:
-        """Анализирует одну категорию: парсинг + веб-поиск + LLM + сохранение инсайтов."""
-        task_desc = f"Парсинг [{index+1}/{total}]: {cat.game_name}"
-        await cls.update_agent_state(db, run_id, cls.AGENT_ANALYZER, "running", task_desc)
-        await cls.log_agent(db, run_id, cls.AGENT_ANALYZER,
-                            f"Парсинг категории: {cat.game_name} → {cat.subcategory_name} (ID: {cat.node_id})")
+        ctx = cls._ctx(cat)
 
+        await cls.update_agent_state(db, run_id, cls.SUB_MARKET_SCRAPER, "running", "Скрапинг лотов", parent_agent=cls.AGENT_ANALYZER, category_context=ctx, progress=10)
         offers = await AgentScraperService.scrape_category_offers(cat.node_id, cat.category_type, funpay_client)
         if not offers:
-            await cls.log_agent(db, run_id, cls.AGENT_ANALYZER,
-                                f"В {cat.game_name} нет активных лотов. Пропускаем.", "warning")
+            await cls.update_agent_state(db, run_id, cls.SUB_MARKET_SCRAPER, "failed", "Нет лотов", parent_agent=cls.AGENT_ANALYZER, category_context=ctx, progress=100, error_message="offers empty")
             return None
+        min_p, max_p, avg_p, med_p = cls._market_stats(offers)
+        await cls.log_agent(db, run_id, cls.SUB_MARKET_SCRAPER, f"{ctx}: {len(offers)} лотов, min={min_p}, max={max_p}, avg={avg_p:.2f}, median={med_p:.2f}", parent_agent=cls.AGENT_ANALYZER, category_context=ctx)
+        await cls.update_agent_state(db, run_id, cls.SUB_MARKET_SCRAPER, "completed", "Скрапинг завершён", parent_agent=cls.AGENT_ANALYZER, category_context=ctx, progress=100)
 
-        prices = [o["price"] for o in offers if o["price"] > 0]
-        avg_price = sum(prices) / len(prices) if prices else 0
-        await cls.log_agent(db, run_id, cls.AGENT_ANALYZER,
-                            f"{cat.game_name}: {len(offers)} предложений, ср. цена {avg_price:.2f}₽")
-
-        # Веб-поиск
-        await cls.update_agent_state(db, run_id, cls.AGENT_ANALYZER, "running", f"Поиск по {cat.game_name}")
+        await cls.update_agent_state(db, run_id, cls.SUB_WEB_RESEARCHER, "running", "Поиск гайдов", parent_agent=cls.AGENT_ANALYZER, category_context=ctx, progress=35)
         search_query = f"how to farm cheap purchase keys automation {cat.game_name} {cat.subcategory_name}"
-        guide_results = await AgentSearchService.search(search_query, api_key=tavily_key, max_results=3)
-        guide_context = "\n".join(f"- {r['url']}\n{r['title']}\n{r['content']}" for r in guide_results)
+        guide_results = await AgentSearchService.search(search_query, api_key=tavily_key, max_results=4)
+        guide_context = "\n".join([f"- {g['title']}\n{g['content']}\n{g['url']}" for g in guide_results])
+        await cls.update_agent_state(db, run_id, cls.SUB_WEB_RESEARCHER, "completed", f"{len(guide_results)} источников", parent_agent=cls.AGENT_ANALYZER, category_context=ctx, progress=100)
 
-        # LLM-анализ
-        await cls.update_agent_state(db, run_id, cls.AGENT_ANALYZER, "running", f"ИИ-анализ {cat.game_name}")
-        offers_sample = "\n".join(
-            f"- ID {o['lot_id']} | {o['price']}₽ | {o['amount']} шт. | {o['user']} | {o['description'][:120]}"
+        await cls.update_agent_state(db, run_id, cls.SUB_MARGIN_ANALYST, "running", "Маржинальный анализ", parent_agent=cls.AGENT_ANALYZER, category_context=ctx, progress=55)
+        offers_sample = "\n".join([
+            f"- ID:{o['lot_id']} | Цена:{o['price']} | Кол-во:{o['amount']} | Продавец:{o['user']} | Текст:{o['description'][:140]}"
             for o in offers[:25]
-        )
-        system_prompt = """Ты — экспертный RMT-аналитик. Проанализируй листинг FunPay и веб-данные, верни JSON:
+        ])
+
+        system_prompt = """Ты — MarginAnalyst для FunPay/RMT. Используй CoT ВНУТРИ, но снаружи верни только JSON.
+Процедура анализа:
+1. Определи 3 самых частых/очевидных продаваемых оффера
+2. Оцени примерную маржу и ценовую нишу
+3. Найди что можно автоматизировать
+4. Сформулируй практические выводы
+Формат JSON:
 {
   "hot_demands": ["..."],
   "automation_potential": "...",
   "easy_supplies": "...",
   "competitor_analysis": "...",
+  "pricing_band": {"min": 0, "max": 0, "avg": 0, "median": 0},
   "insights": [
     {"type": "trend", "content": "..."},
     {"type": "demand", "content": "..."},
     {"type": "automation_potential", "content": "..."}
   ]
 }"""
-        user_prompt = f"""Категория: {cat.game_name} → {cat.subcategory_name}
+        user_prompt = f"""Категория: {ctx}
+Рыночные цены: min={min_p}, max={max_p}, avg={avg_p:.2f}, median={med_p:.2f}
+
 Листинг конкурентов:
 {offers_sample}
 
 Веб-источники:
-{guide_context}"""
+{guide_context}
 
-        analysis_json = await cls.call_llm_json(db, system_prompt, user_prompt, cls.AGENT_ANALYZER, run_id)
+Верни только JSON."""
+        analysis_json = await cls.call_llm_json(db, system_prompt, user_prompt, cls.SUB_MARGIN_ANALYST, run_id, parent_agent=cls.AGENT_ANALYZER, category_context=ctx)
+        await cls.update_agent_state(db, run_id, cls.SUB_MARGIN_ANALYST, "completed", "Анализ готов", parent_agent=cls.AGENT_ANALYZER, category_context=ctx, progress=100)
 
-        # Сохраняем инсайты в Memory
-        await cls.update_agent_state(db, run_id, cls.AGENT_MEMORY, "running",
-                                     f"Запись инсайтов: {cat.game_name}")
+        await cls.update_agent_state(db, run_id, cls.SUB_INSIGHT_WRITER, "running", "Сохранение инсайтов", parent_agent=cls.AGENT_ANALYZER, category_context=ctx, progress=85)
         insights = analysis_json.get("insights", [])
         for ins in insights:
             await SemanticMemoryService.save_insight(
-                db=db, run_id=run_id, game_name=cat.game_name,
+                db=db,
+                run_id=run_id,
+                game_name=cat.game_name,
                 subcategory_name=cat.subcategory_name,
-                insight_type=ins.get("type", "trend"), content=ins.get("content", "")
+                insight_type=ins.get("type", "trend"),
+                content=ins.get("content", ""),
             )
-        await cls.log_agent(db, run_id, cls.AGENT_MEMORY,
-                            f"Сохранено {len(insights)} инсайтов для {cat.game_name}")
+        await cls.update_agent_state(db, run_id, cls.SUB_INSIGHT_WRITER, "completed", f"{len(insights)} инсайтов", parent_agent=cls.AGENT_ANALYZER, category_context=ctx, progress=100)
 
-        return {"game_name": cat.game_name, "subcategory_name": cat.subcategory_name, "analysis": analysis_json}
+        return {
+            "game_name": cat.game_name,
+            "subcategory_name": cat.subcategory_name,
+            "category_context": ctx,
+            "analysis": analysis_json,
+            "market": {"min": min_p, "max": max_p, "avg": avg_p, "median": med_p},
+        }
 
-    # ── Main flow ────────────────────────────────────────────────────────────
+    @classmethod
+    async def _generate_for_category(cls, db: AsyncSession, run_id: int, item: Dict[str, Any]) -> List[GeneratedLot]:
+        g_name = item["game_name"]
+        sub_name = item["subcategory_name"]
+        ctx = item["category_context"]
+        analysis = item["analysis"]
+        market = item["market"]
+
+        await cls.update_agent_state(db, run_id, cls.SUB_SUPPLY_STRATEGIST, "running", "План поставки", parent_agent=cls.AGENT_GENERATOR, category_context=ctx, progress=20)
+        supply_plan = analysis.get("easy_supplies", "")
+        await cls.update_agent_state(db, run_id, cls.SUB_SUPPLY_STRATEGIST, "completed", "Стратегия готова", parent_agent=cls.AGENT_GENERATOR, category_context=ctx, progress=100)
+
+        await cls.update_agent_state(db, run_id, cls.SUB_COPYWRITER, "running", "Генерация текстов", parent_agent=cls.AGENT_GENERATOR, category_context=ctx, progress=40)
+        few_shot_examples = """
+ПРИМЕР 1:
+Заголовок: Быстрая доставка золота WoW — 5 минут
+Описание: ✅ Мгновенная выдача\n✅ Безопасная передача\n✅ Онлайн поддержка
+
+ПРИМЕР 2:
+Заголовок: Калибровка CS2 Premier под ключ
+Описание: 🔥 Быстрый старт\n🎯 Гарантия результата\n💬 Отчёт по ходу выполнения
+"""
+        system_prompt = """Ты — CopywriterAgent для FunPay. Пиши продающие, но правдоподобные карточки.
+Используй стиль few-shot примеров. Верни JSON:
+{
+  "draft_lots": [
+    {"title": "...", "description": "...", "amount": 10, "ai_reasoning": "...", "seo_keywords": ["..."]}
+  ]
+}"""
+        user_prompt = f"""Категория: {ctx}
+Спрос: {analysis.get('competitor_analysis', '')}
+Автоматизация: {analysis.get('automation_potential', '')}
+Поставка: {supply_plan}
+
+Примеры стиля:
+{few_shot_examples}
+
+Сгенерируй 8-12 draft_lots. Только JSON."""
+        draft_json = await cls.call_llm_json(db, system_prompt, user_prompt, cls.SUB_COPYWRITER, run_id, parent_agent=cls.AGENT_GENERATOR, category_context=ctx)
+        draft_lots = draft_json.get("draft_lots", [])
+        await cls.update_agent_state(db, run_id, cls.SUB_COPYWRITER, "completed", f"Черновиков: {len(draft_lots)}", parent_agent=cls.AGENT_GENERATOR, category_context=ctx, progress=100)
+
+        await cls.update_agent_state(db, run_id, cls.SUB_PRICING, "running", "Расчёт цен", parent_agent=cls.AGENT_GENERATOR, category_context=ctx, progress=70)
+        pricing_prompt = """Ты — PricingAgent. Верни JSON с рассчитанными ценами.
+Формула:
+- если оффер массовый и конкурентный → цена = median * 0.95 (strategy=undercut)
+- если оффер качественный/сложный → цена = avg * 1.05 (strategy=premium)
+- если нейтрально → цена = median (strategy=median)
+Формат:
+{
+  "priced_lots": [
+    {"title": "...", "price": 199, "strategy": "undercut", "why": "..."}
+  ]
+}"""
+        pricing_user = f"""Рынок {ctx}: min={market['min']}, max={market['max']}, avg={market['avg']:.2f}, median={market['median']:.2f}
+Черновики:
+{json.dumps(draft_lots, ensure_ascii=False)}
+
+Верни priced_lots JSON."""
+        pricing_json = await cls.call_llm_json(db, pricing_prompt, pricing_user, cls.SUB_PRICING, run_id, parent_agent=cls.AGENT_GENERATOR, category_context=ctx)
+        priced_map = {p.get('title'): p for p in pricing_json.get('priced_lots', [])}
+        await cls.update_agent_state(db, run_id, cls.SUB_PRICING, "completed", "Цены рассчитаны", parent_agent=cls.AGENT_GENERATOR, category_context=ctx, progress=100)
+
+        await cls.update_agent_state(db, run_id, cls.SUB_SEO, "running", "SEO-поля", parent_agent=cls.AGENT_GENERATOR, category_context=ctx, progress=85)
+        await cls.update_agent_state(db, run_id, cls.SUB_SEO, "completed", "SEO готово", parent_agent=cls.AGENT_GENERATOR, category_context=ctx, progress=100)
+
+        saved: List[GeneratedLot] = []
+        for d in draft_lots:
+            p = priced_map.get(d.get("title"), {})
+            price = float(p.get("price", market["median"] or market["avg"] or 10.0))
+            strategy = p.get("strategy", "median")
+            fields_json = {
+                "fields[summary][ru]": d.get("title", ""),
+                "fields[desc][ru]": d.get("description", ""),
+                "fields[payment_msg][ru]": "Спасибо за покупку! Инструкция будет отправлена автоматически.",
+                "price": str(int(price)),
+                "amount": str(int(d.get("amount", 10))),
+                "seo_keywords": d.get("seo_keywords", []),
+            }
+            lot = GeneratedLot(
+                run_id=run_id,
+                game_name=g_name,
+                subcategory_name=sub_name,
+                title=d.get("title", ""),
+                description=d.get("description", ""),
+                amount=int(d.get("amount", 10)),
+                price=price,
+                ai_reasoning=d.get("ai_reasoning", p.get("why", "")),
+                fields_json=fields_json,
+                price_min_market=market["min"],
+                price_max_market=market["max"],
+                price_avg_market=market["avg"],
+                price_strategy=strategy,
+            )
+            db.add(lot)
+            saved.append(lot)
+        await db.commit()
+        for lot in saved:
+            await db.refresh(lot)
+        return saved
+
+    @classmethod
+    async def retry_subagent(
+        cls,
+        db: AsyncSession,
+        run_id: int,
+        agent_name: str,
+        parent_agent: Optional[str],
+        category_context: Optional[str],
+    ) -> Dict[str, Any]:
+        stmt = select(AgentState).where(
+            AgentState.run_id == run_id,
+            AgentState.agent_name == agent_name,
+            AgentState.parent_agent == parent_agent,
+            AgentState.category_context == category_context,
+        )
+        res = await db.execute(stmt)
+        st = res.scalar_one_or_none()
+        if not st:
+            raise RuntimeError("subagent state not found")
+        st.status = "pending"
+        st.progress = 0
+        st.retry_count = (st.retry_count or 0) + 1
+        st.error_message = None
+        db.add(st)
+        await db.commit()
+        await cls.notify(db, f"agent_run_{run_id}", {
+            "type": "retry",
+            "agent_name": agent_name,
+            "parent_agent": parent_agent,
+            "category_context": category_context,
+            "retry_count": st.retry_count,
+        })
+        return {"success": True, "retry_count": st.retry_count}
 
     @classmethod
     async def run_analysis_flow(
-        cls, db: AsyncSession, run_id: int,
+        cls,
+        db: AsyncSession,
+        run_id: int,
         tavily_key: Optional[str] = None,
-        manual_node_ids: Optional[List[str]] = None
+        manual_node_ids: Optional[List[str]] = None,
     ):
-        """
-        Основной фоновый поток. 5 агентов, параллельный анализ категорий.
-        Поддерживает asyncio.CancelledError для корректной отмены.
-        """
         try:
-            stmt = select(AgentRun).where(AgentRun.id == run_id)
-            run_res = await db.execute(stmt)
-            run = run_res.scalar_one_or_none()
+            run = await db.get(AgentRun, run_id)
             if not run:
-                logger.error(f"Run {run_id} не найден в БД")
                 return
-
             run.status = "running"
             db.add(run)
             await db.commit()
+            await cls.notify(db, f"agent_run_{run_id}", {"type": "run_meta", "run_status": run.status, "total_cost_tokens": run.total_cost_tokens})
 
-            # Инициализируем все 5 агентов
-            for ag in cls.ALL_AGENTS:
+            for ag in cls.MAIN_AGENTS:
                 await cls.update_agent_state(db, run_id, ag, "pending", "Ожидание")
-            await cls.update_agent_state(db, run_id, cls.AGENT_SELECTOR, "running", "Инициализация")
-            await cls.log_agent(db, run_id, cls.AGENT_SELECTOR, "Оркестратор запущен. Проверка категорий...")
+            for parent, subagents in cls.SUBAGENTS_BY_PARENT.items():
+                for sub in subagents:
+                    await cls.update_agent_state(db, run_id, sub, "pending", "Ожидание", parent_agent=parent)
 
-            # ── 0. Синхронизация категорий ──────────────────────────────────
-            stmt_count = select(FunpayGlobalCategory)
-            cat_count_res = await db.execute(stmt_count)
-            all_categories = list(cat_count_res.scalars().all())
-
+            all_categories = list((await db.execute(select(FunpayGlobalCategory))).scalars().all())
             if not all_categories:
-                await cls.log_agent(db, run_id, cls.AGENT_SELECTOR,
-                                    "Категории отсутствуют. Запуск синхронизации...", "warning")
-                acc_stmt = select(FanpayAccount).where(FanpayAccount.always_online == True)
-                acc_res = await db.execute(acc_stmt)
-                active_account = acc_res.scalars().first()
-                client = FanpayClient(
-                    golden_key=active_account.golden_key, proxy_url=active_account.proxy_url,
-                    user_agent=active_account.user_agent, cookies=active_account.cookies
-                ) if active_account else FanpayClient("", "", "", {})
+                await cls.log_agent(db, run_id, cls.AGENT_SELECTOR, "Категории не найдены", "error")
+                raise RuntimeError("No categories in DB")
 
-                try:
-                    categories_parsed = await client.parse_all_categories_and_subcategories()
-                except Exception as ex:
-                    logger.warning(f"Сбой парсинга категорий: {ex}")
-                    categories_parsed = []
+            await cls.update_agent_state(db, run_id, cls.AGENT_SELECTOR, "running", "Отбор категорий", progress=15)
+            selected_categories = await cls._selector_phase(db, run_id, all_categories, run.limit_categories, tavily_key, manual_node_ids)
+            await cls.update_agent_state(db, run_id, cls.AGENT_SELECTOR, "completed", f"Выбрано {len(selected_categories)}", progress=100)
+            await cls.update_run_progress(db, run_id, 0, len(selected_categories))
 
-                total_parsed = sum(len(g.get("subcategories", [])) for g in categories_parsed) if categories_parsed else 0
-
-                if categories_parsed and total_parsed > 0:
-                    for game in categories_parsed:
-                        for sub in game["subcategories"]:
-                            db.add(FunpayGlobalCategory(
-                                game_name=game["game_name"], subcategory_name=sub["name"],
-                                node_id=sub["node_id"], category_type=sub["type"]
-                            ))
-                    await db.commit()
-                else:
-                    await cls.log_agent(db, run_id, cls.AGENT_SELECTOR,
-                                        "Скрапинг заблокирован. Загружаем резервные категории.", "warning")
-                    for fd in [
-                        {"game_name": "Dota 2", "subcategory_name": "Услуги", "node_id": "83", "category_type": "lots"},
-                        {"game_name": "Counter-Strike 2", "subcategory_name": "Предметы", "node_id": "119", "category_type": "lots"},
-                        {"game_name": "Steam", "subcategory_name": "Игры", "node_id": "421", "category_type": "lots"},
-                        {"game_name": "Roblox", "subcategory_name": "Робуксы", "node_id": "1225", "category_type": "lots"},
-                        {"game_name": "Rust", "subcategory_name": "Предметы", "node_id": "745", "category_type": "lots"},
-                        {"game_name": "Brawl Stars", "subcategory_name": "Аккаунты", "node_id": "1940", "category_type": "lots"},
-                        {"game_name": "GTA 5 RP", "subcategory_name": "Валюта", "node_id": "1002", "category_type": "lots"},
-                        {"game_name": "World of Warcraft", "subcategory_name": "Золото", "node_id": "81", "category_type": "lots"},
-                        {"game_name": "Genshin Impact", "subcategory_name": "Услуги", "node_id": "921", "category_type": "lots"},
-                        {"game_name": "Mobile Legends", "subcategory_name": "Алмазы", "node_id": "1802", "category_type": "lots"},
-                    ]:
-                        db.add(FunpayGlobalCategory(**fd))
-                    await db.commit()
-
-                stmt_count = select(FunpayGlobalCategory)
-                cat_count_res = await db.execute(stmt_count)
-                all_categories = list(cat_count_res.scalars().all())
-                await cls.log_agent(db, run_id, cls.AGENT_SELECTOR,
-                                    f"Доступно {len(all_categories)} категорий.")
-
-            # ── ЭТАП 1: CategorySelector ──────────────────────────────────────
-            selected_categories: List[FunpayGlobalCategory] = []
-
-            if manual_node_ids:
-                # Ручной режим: пользователь выбрал конкретные node_id
-                await cls.log_agent(db, run_id, cls.AGENT_SELECTOR,
-                                    f"Ручной режим. Выбрано {len(manual_node_ids)} категорий пользователем.")
-                id_set = set(str(nid) for nid in manual_node_ids)
-                selected_categories = [c for c in all_categories if str(c.node_id) in id_set]
-                if not selected_categories:
-                    selected_categories = all_categories[:run.limit_categories]
-            else:
-                # Авто-режим: LLM выбирает категории
-                await cls.log_agent(db, run_id, cls.AGENT_SELECTOR,
-                                    "Авто-режим. Поиск горячих RMT-трендов...")
-                await cls.update_agent_state(db, run_id, cls.AGENT_SELECTOR, "running", "Поиск трендов")
-
-                search_results = await AgentSearchService.search(
-                    "most profitable games for RMT selling funpay popular games 2026",
-                    api_key=tavily_key, max_results=5
-                )
-                search_context = "\n".join(
-                    f"Источник #{i+1} ({r['url']}):\n{r['title']}\n{r['content']}"
-                    for i, r in enumerate(search_results)
-                )
-
-                # Memory: ищем прошлые инсайты
-                await cls.update_agent_state(db, run_id, cls.AGENT_MEMORY, "running",
-                                             "Поиск прошлых инсайтов в памяти")
-                await cls.log_agent(db, run_id, cls.AGENT_MEMORY, "Извлечение инсайтов из семантической памяти...")
-                past_insights = await SemanticMemoryService.search_similar_insights(
-                    db, "profitable games high demand", limit=5
-                )
-                past_context = ""
-                if past_insights:
-                    past_context = "Ранее сохранённые инсайты:\n"
-                    past_context += "\n".join(
-                        f"- {pi.game_name} ({pi.subcategory_name}): {pi.content[:150]}"
-                        for pi in past_insights
-                    )
-                await cls.update_agent_state(db, run_id, cls.AGENT_MEMORY, "completed",
-                                             f"Извлечено {len(past_insights)} инсайтов")
-                await cls.log_agent(db, run_id, cls.AGENT_MEMORY,
-                                    f"Память: найдено {len(past_insights)} релевантных инсайтов.")
-
-                await cls.update_agent_state(db, run_id, cls.AGENT_SELECTOR, "running", "LLM выбирает категории")
-
-                # Сортируем по популярным играм, не случайно
-                priority_games = ["dota", "counter", "cs", "steam", "gta", "rust", "pubg", "brawl",
-                                  "roblox", "genshin", "warcraft", "pubg", "valorant", "minecraft"]
-                def sort_key(c: FunpayGlobalCategory) -> int:
-                    name_lower = c.game_name.lower()
-                    for i, kw in enumerate(priority_games):
-                        if kw in name_lower:
-                            return i
-                    return len(priority_games)
-                sorted_cats = sorted(all_categories, key=sort_key)
-                sampled_cats = sorted_cats[:120]
-
-                available_cats_str = "\n".join(
-                    f"- ID: {c.node_id} | {c.game_name} | {c.subcategory_name} | {c.category_type}"
-                    for c in sampled_cats
-                )
-
-                system_prompt = """Ты — аналитик RMT-рынка FunPay. Выбери N самых перспективных категорий.
-Верни JSON: {"selected_ids": ["81", "119"], "reasoning": "..."}"""
-                user_prompt = f"""Выбери ровно {run.limit_categories} категорий.
-
-Веб-тренды:
-{search_context}
-
-{past_context}
-
-Доступные категории:
-{available_cats_str}
-
-Верни JSON с выбранными node_id."""
-
-                llm_response = await cls.call_llm_json(db, system_prompt, user_prompt, cls.AGENT_SELECTOR, run_id)
-                selected_ids = llm_response.get("selected_ids", [])
-
-                for cat_id in selected_ids:
-                    cat_obj = next((c for c in all_categories if str(c.node_id) == str(cat_id)), None)
-                    if cat_obj:
-                        selected_categories.append(cat_obj)
-
-                if not selected_categories:
-                    await cls.log_agent(db, run_id, cls.AGENT_SELECTOR,
-                                        "LLM не вернул валидные ID. Аварийный выбор.", "warning")
-                    selected_categories = sorted_cats[:run.limit_categories]
-
-            await cls.log_agent(db, run_id, cls.AGENT_SELECTOR,
-                                f"Отобрано {len(selected_categories)} категорий: " +
-                                ", ".join(f"{c.game_name} ({c.subcategory_name})" for c in selected_categories))
-            await cls.update_agent_state(db, run_id, cls.AGENT_SELECTOR, "completed", "Выбор завершён")
-
-            # ── ЭТАП 2: ListingAnalyzer (параллельно) ─────────────────────────
-            await cls.update_agent_state(db, run_id, cls.AGENT_ANALYZER, "running", "Параллельный анализ")
-            await cls.log_agent(db, run_id, cls.AGENT_ANALYZER,
-                                f"Параллельный анализ {len(selected_categories)} категорий...")
-
-            acc_stmt = select(FanpayAccount).where(FanpayAccount.always_online == True)
-            acc_res = await db.execute(acc_stmt)
+            await cls.update_agent_state(db, run_id, cls.AGENT_ANALYZER, "running", "Анализ категорий", progress=10)
+            acc_res = await db.execute(select(FanpayAccount).where(FanpayAccount.always_online == True))
             active_account = acc_res.scalars().first()
             funpay_client = FanpayClient(
-                golden_key=active_account.golden_key, proxy_url=active_account.proxy_url,
-                user_agent=active_account.user_agent, cookies=active_account.cookies
+                golden_key=active_account.golden_key,
+                proxy_url=active_account.proxy_url,
+                user_agent=active_account.user_agent,
+                cookies=active_account.cookies,
             ) if active_account else None
 
-            # Параллельный запуск — максимум 3 одновременно (semaphore)
             semaphore = asyncio.Semaphore(3)
+            done_count = 0
 
-            async def bounded_analyse(cat: FunpayGlobalCategory, idx: int) -> Optional[Dict]:
+            async def worker(cat: FunpayGlobalCategory):
+                nonlocal done_count
                 async with semaphore:
-                    return await cls._analyse_category(
-                        db, run_id, cat, idx, len(selected_categories), funpay_client, tavily_key
-                    )
+                    async with async_session_maker() as worker_db:
+                        try:
+                            res = await cls._analyse_category(worker_db, run_id, cat, funpay_client, tavily_key)
+                            done_count += 1
+                            await cls.update_run_progress(worker_db, run_id, done_count, len(selected_categories))
+                            return res
+                        except Exception as e:
+                            logger.error(f"Воркер {cat.game_name}/{cat.subcategory_name} упал: {e}")
+                            return None
 
-            results = await asyncio.gather(
-                *[bounded_analyse(cat, i) for i, cat in enumerate(selected_categories)],
-                return_exceptions=False
-            )
-            category_analyses = [r for r in results if r is not None]
+            analyzed_results = await asyncio.gather(*[worker(cat) for cat in selected_categories])
+            analyzed_results = [x for x in analyzed_results if x is not None]
+            await cls.update_agent_state(db, run_id, cls.AGENT_ANALYZER, "completed", f"Проанализировано {len(analyzed_results)}", progress=100)
 
-            await cls.log_agent(db, run_id, cls.AGENT_ANALYZER,
-                                f"Анализ завершён. Успешно обработано {len(category_analyses)} категорий.")
-            await cls.update_agent_state(db, run_id, cls.AGENT_ANALYZER, "completed", "Анализ завершён")
-            await cls.update_agent_state(db, run_id, cls.AGENT_MEMORY, "completed", "Инсайты сохранены")
+            await cls.update_agent_state(db, run_id, cls.AGENT_GENERATOR, "running", "Генерация лотов", progress=20)
+            all_lots: List[GeneratedLot] = []
+            for item in analyzed_results:
+                all_lots.extend(await cls._generate_for_category(db, run_id, item))
+            await cls.update_agent_state(db, run_id, cls.AGENT_GENERATOR, "completed", f"Сгенерировано {len(all_lots)}", progress=100)
 
-            # ── ЭТАП 3: LotGenerator ─────────────────────────────────────────
-            await cls.update_agent_state(db, run_id, cls.AGENT_GENERATOR, "running", "Синтез лотов")
-            await cls.log_agent(db, run_id, cls.AGENT_GENERATOR, "Генератор запускает синтез каталога лотов...")
+            await cls.update_agent_state(db, run_id, cls.AGENT_PUBLISHER, "running", "Финализация", progress=30)
+            await cls.update_agent_state(db, run_id, cls.SUB_QUALITY, "running", "Проверка полноты", parent_agent=cls.AGENT_PUBLISHER, progress=25)
+            quality_passed = [lot for lot in all_lots if lot.title and lot.description and lot.price > 0]
+            await cls.update_agent_state(db, run_id, cls.SUB_QUALITY, "completed", f"Проверено {len(quality_passed)}", parent_agent=cls.AGENT_PUBLISHER, progress=100)
 
-            total_generated = 0
-            for idx, cat_analysis in enumerate(category_analyses):
-                g_name  = cat_analysis["game_name"]
-                sub_name = cat_analysis["subcategory_name"]
-                analysis = cat_analysis["analysis"]
+            await cls.update_agent_state(db, run_id, cls.SUB_DUPLICATE, "running", "Удаление дублей", parent_agent=cls.AGENT_PUBLISHER, progress=50)
+            seen = set()
+            duplicates = []
+            for lot in quality_passed:
+                key = (lot.game_name.strip().lower(), lot.title.strip().lower())
+                if key in seen:
+                    duplicates.append(lot.id)
+                else:
+                    seen.add(key)
+            if duplicates:
+                stmt = select(GeneratedLot).where(GeneratedLot.id.in_(duplicates))
+                dup_res = await db.execute(stmt)
+                for lot in dup_res.scalars().all():
+                    await db.delete(lot)
+                await db.commit()
+            await cls.update_agent_state(db, run_id, cls.SUB_DUPLICATE, "completed", f"Удалено дублей: {len(duplicates)}", parent_agent=cls.AGENT_PUBLISHER, progress=100)
 
-                await cls.update_agent_state(db, run_id, cls.AGENT_GENERATOR, "running",
-                                             f"Генерация [{idx+1}/{len(category_analyses)}]: {g_name}")
-                await cls.log_agent(db, run_id, cls.AGENT_GENERATOR,
-                                    f"Генерация лотов для {g_name} → {sub_name}...")
+            await cls.update_agent_state(db, run_id, cls.SUB_EXPORTER, "completed", "Лоты готовы к экспорту", parent_agent=cls.AGENT_PUBLISHER, progress=100)
+            await cls.update_agent_state(db, run_id, cls.AGENT_PUBLISHER, "completed", "Финализация завершена", progress=100)
 
-                system_prompt = """Ты — копирайтер и эксперт по продажам FunPay. Сгенерируй список лотов.
-Верни JSON: {"lots": [{"title": "...", "description": "...", "price": 99.0, "amount": 50,
-"ai_reasoning": "...", "fields_json": {"fields[summary][ru]": "...", "fields[desc][ru]": "...",
-"fields[payment_msg][ru]": "...", "price": "99", "amount": "50"}}]}"""
-
-                user_prompt = f"""Сгенерируй 10-15 прибыльных лотов для {g_name} ({sub_name}).
-Конкуренты: {analysis.get('competitor_analysis', '')}
-Автоматизация: {analysis.get('automation_potential', '')}
-Поставки: {analysis.get('easy_supplies', '')}"""
-
-                try:
-                    lots_resp = await cls.call_llm_json(db, system_prompt, user_prompt, cls.AGENT_GENERATOR, run_id)
-                    lots_list = lots_resp.get("lots", [])
-                    for lot_data in lots_list:
-                        db.add(GeneratedLot(
-                            run_id=run_id, game_name=g_name, subcategory_name=sub_name,
-                            title=lot_data.get("title", ""),
-                            description=lot_data.get("description", ""),
-                            price=float(lot_data.get("price", 10.0)),
-                            amount=int(lot_data.get("amount", 1)),
-                            fields_json=lot_data.get("fields_json", {}),
-                            ai_reasoning=lot_data.get("ai_reasoning", "")
-                        ))
-                        total_generated += 1
-                    await db.commit()
-                    await cls.log_agent(db, run_id, cls.AGENT_GENERATOR,
-                                        f"{g_name}: сгенерировано {len(lots_list)} лотов.")
-                except asyncio.CancelledError:
-                    raise
-                except Exception as ex:
-                    await cls.log_agent(db, run_id, cls.AGENT_GENERATOR,
-                                        f"Ошибка генерации для {g_name}: {ex}", "error")
-
-            await cls.log_agent(db, run_id, cls.AGENT_GENERATOR,
-                                f"Генерация завершена. Итого: {total_generated} лотов.")
-            await cls.update_agent_state(db, run_id, cls.AGENT_GENERATOR, "completed", "Генерация завершена")
-
-            # ── ЭТАП 4: Publisher ─────────────────────────────────────────────
-            await cls.update_agent_state(db, run_id, cls.AGENT_PUBLISHER, "running", "Финализация результатов")
-            await cls.log_agent(db, run_id, cls.AGENT_PUBLISHER,
-                                f"Publisher: валидация и финализация {total_generated} лотов...")
-
-            # Проверяем что все лоты записаны
-            stmt_lots = select(GeneratedLot).where(GeneratedLot.run_id == run_id)
-            lots_res = await db.execute(stmt_lots)
-            final_lots = lots_res.scalars().all()
-
-            await cls.log_agent(db, run_id, cls.AGENT_PUBLISHER,
-                                f"Проверка завершена. {len(final_lots)} лотов готовы к экспорту в шаблоны.")
-            await cls.update_agent_state(db, run_id, cls.AGENT_PUBLISHER, "completed",
-                                         f"{len(final_lots)} лотов готово к публикации")
-
-            # ── Завершение ────────────────────────────────────────────────────
-            run.status = "completed"
-            run.completed_at = datetime.utcnow()
-            db.add(run)
-            await db.commit()
-            await cls.log_agent(db, run_id, "System",
-                                f"Анализ успешно завершён! Создано {total_generated} лотов.")
-
+            run = await db.get(AgentRun, run_id)
+            if run:
+                run.status = "completed"
+                run.completed_at = datetime.utcnow()
+                db.add(run)
+                await db.commit()
+                await cls.notify(db, f"agent_run_{run_id}", {
+                    "type": "done",
+                    "run_status": run.status,
+                    "total_cost_tokens": run.total_cost_tokens,
+                    "lots_count": len(all_lots) - len(duplicates),
+                    "categories_done": run.categories_done,
+                    "categories_total": run.categories_total,
+                })
         except asyncio.CancelledError:
-            # Корректная отмена через cancel()
-            logger.info(f"Run {run_id}: задача отменена пользователем.")
-            from app.database import async_session_maker
-            async with async_session_maker() as cancel_db:
-                stmt = select(AgentRun).where(AgentRun.id == run_id)
-                run_res = await cancel_db.execute(stmt)
-                run_obj = run_res.scalar_one_or_none()
-                if run_obj:
-                    run_obj.status = "failed"
-                    run_obj.completed_at = datetime.utcnow()
-                    cancel_db.add(run_obj)
-                    await cancel_db.commit()
-                for ag in cls.ALL_AGENTS:
-                    await cls.update_agent_state(cancel_db, run_id, ag, "failed", "Отменено пользователем")
-                await cls.log_agent(cancel_db, run_id, "System",
-                                    "Анализ отменён пользователем.", "warning")
+            run = await db.get(AgentRun, run_id)
+            if run:
+                run.status = "failed"
+                run.completed_at = datetime.utcnow()
+                db.add(run)
+                await db.commit()
+            await cls.log_agent(db, run_id, "System", "Анализ отменён пользователем", "warning")
+            await cls.notify(db, f"agent_run_{run_id}", {"type": "error", "message": "Анализ отменён пользователем"})
             ACTIVE_TASKS.pop(run_id, None)
-
         except Exception as err:
-            logger.error(f"Критическая ошибка оркестратора run={run_id}: {err}", exc_info=True)
-            from app.database import async_session_maker
-            async with async_session_maker() as err_db:
-                stmt = select(AgentRun).where(AgentRun.id == run_id)
-                run_res = await err_db.execute(stmt)
-                run_obj = run_res.scalar_one_or_none()
-                if run_obj:
-                    run_obj.status = "failed"
-                    run_obj.completed_at = datetime.utcnow()
-                    err_db.add(run_obj)
-                    await err_db.commit()
-                for ag in cls.ALL_AGENTS:
-                    await cls.update_agent_state(err_db, run_id, ag, "failed", "Критическая ошибка")
-                await cls.log_agent(err_db, run_id, "System", f"Критический сбой: {str(err)}", "error")
+            logger.exception(err)
+            run = await db.get(AgentRun, run_id)
+            if run:
+                run.status = "failed"
+                run.completed_at = datetime.utcnow()
+                db.add(run)
+                await db.commit()
+            await cls.log_agent(db, run_id, "System", f"Критический сбой: {err}", "error")
+            await cls.notify(db, f"agent_run_{run_id}", {"type": "error", "message": str(err)})
             ACTIVE_TASKS.pop(run_id, None)
         else:
             ACTIVE_TASKS.pop(run_id, None)

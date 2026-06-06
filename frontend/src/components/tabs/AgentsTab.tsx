@@ -238,11 +238,11 @@ export default function AgentsTab() {
     setLogs([]);
     const s = run.status === 'completed' ? 'completed' : run.status === 'failed' ? 'failed' : 'pending';
     setAgentStates({
-      CategorySelector: { status: s, tokens_used: 0 },
-      Memory:           { status: s, tokens_used: 0 },
-      ListingAnalyzer:  { status: s, tokens_used: 0 },
-      LotGenerator:     { status: s, tokens_used: 0 },
-      Publisher:        { status: s, tokens_used: 0 },
+      CategorySelector: { agent_name: 'CategorySelector', status: s, tokens_used: 0 },
+      Memory:           { agent_name: 'Memory', status: s, tokens_used: 0 },
+      ListingAnalyzer:  { agent_name: 'ListingAnalyzer', status: s, tokens_used: 0 },
+      LotGenerator:     { agent_name: 'LotGenerator', status: s, tokens_used: 0 },
+      Publisher:        { agent_name: 'Publisher', status: s, tokens_used: 0 },
     });
   };
 
