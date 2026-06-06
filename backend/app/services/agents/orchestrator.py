@@ -236,44 +236,72 @@ class AgentOrchestrator:
             key_obj = await AIService.get_next_key(db)
             if not key_obj:
                 raise RuntimeError("Нет активных ключей ИИ в базе данных")
-            try:
-                response = await litellm.acompletion(
-                    model=model,
-                    custom_llm_provider="fireworks_ai",
-                    messages=messages,
-                    api_key=key_obj.key_value,
-                    temperature=0.2,
-                    max_tokens=4000,
-                    response_format={"type": "json_object"},
-                    timeout=120.0,
-                )
-                await AIService.mark_key_success(db, key_obj)
-                usage = getattr(response, "usage", None)
-                tokens = usage.total_tokens if usage else 0
-                await cls.update_agent_state(
-                    db, run_id, agent_name, "running",
-                    tokens_used=tokens,
-                    parent_agent=parent_agent,
-                    category_context=category_context,
-                )
-                run_obj = await db.get(AgentRun, run_id)
-                if run_obj:
-                    run_obj.total_cost_tokens += tokens
-                    db.add(run_obj)
-                    await db.commit()
-                    await cls.notify(db, f"agent_run_{run_id}", {
-                        "type": "run_meta",
-                        "total_cost_tokens": run_obj.total_cost_tokens,
-                        "run_status": run_obj.status,
-                    })
-                raw_text = response.choices[0].message.content.strip()
-                return json.loads(raw_text)
-            except asyncio.CancelledError:
-                raise
-            except Exception as e:
-                await AIService.mark_key_failure(db, key_obj, error=e)
-                last_exception = e
-                continue
+
+            # Exponential backoff при rate limit: 3s → 6s → 12s → 24s (до 4 попыток на модель)
+            max_retries_per_model = 4
+            base_delay = 3.0
+
+            for attempt in range(max_retries_per_model):
+                try:
+                    response = await litellm.acompletion(
+                        model=model,
+                        custom_llm_provider="fireworks_ai",
+                        messages=messages,
+                        api_key=key_obj.key_value,
+                        temperature=0.2,
+                        max_tokens=4000,
+                        response_format={"type": "json_object"},
+                        timeout=120.0,
+                    )
+                    await AIService.mark_key_success(db, key_obj)
+                    usage = getattr(response, "usage", None)
+                    tokens = usage.total_tokens if usage else 0
+                    await cls.update_agent_state(
+                        db, run_id, agent_name, "running",
+                        tokens_used=tokens,
+                        parent_agent=parent_agent,
+                        category_context=category_context,
+                    )
+                    run_obj = await db.get(AgentRun, run_id)
+                    if run_obj:
+                        run_obj.total_cost_tokens += tokens
+                        db.add(run_obj)
+                        await db.commit()
+                        await cls.notify(db, f"agent_run_{run_id}", {
+                            "type": "run_meta",
+                            "total_cost_tokens": run_obj.total_cost_tokens,
+                            "run_status": run_obj.status,
+                        })
+                    raw_text = response.choices[0].message.content.strip()
+                    return json.loads(raw_text)
+
+                except asyncio.CancelledError:
+                    raise
+                except litellm.RateLimitError as e:
+                    # Rate limit — не ломаем ключ, ждём и повторяем ту же модель
+                    delay = base_delay * (2 ** attempt)  # 3 → 6 → 12 → 24
+                    logger.warning(
+                        f"[{agent_name}] Rate limit на {model} "
+                        f"(попытка {attempt + 1}/{max_retries_per_model}), "
+                        f"жду {delay:.0f}с..."
+                    )
+                    await AIService.mark_key_failure(db, key_obj, error=e)
+                    if attempt < max_retries_per_model - 1:
+                        await asyncio.sleep(delay)
+                        # Берём ключ заново — может другой уже свободен
+                        fresh_key = await AIService.get_next_key(db)
+                        if fresh_key:
+                            key_obj = fresh_key
+                        continue
+                    else:
+                        last_exception = e
+                        break  # Все попытки на эту модель исчерпаны → следующая модель
+
+                except Exception as e:
+                    await AIService.mark_key_failure(db, key_obj, error=e)
+                    last_exception = e
+                    break  # Не rate limit — сразу следующая модель
+
         raise last_exception if last_exception else RuntimeError("Все модели-кандидаты вернули ошибку")
 
     @staticmethod

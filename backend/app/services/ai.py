@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import re
 from datetime import datetime
@@ -242,81 +243,102 @@ class AIService:
             key_obj = await cls.get_next_key(db)
             if not key_obj:
                 raise RuntimeError("Нет активных ключей ИИ в базе данных")
-                
+
             # Пробуем кандидат-модели по очереди
             for model in candidate_models:
-                try:
-                    logger.info(f"Запрос к ИИ (ID ключа: {key_obj.id}) с моделью {model}...")
-                    response = await litellm.acompletion(
-                        model=model,
-                        custom_llm_provider="fireworks_ai",
-                        messages=messages,
-                        api_key=key_obj.key_value,
-                        temperature=0.7,
-                        max_tokens=3000,
-                        timeout=90.0
-                    )
-                    
-                    # Извлекаем текст ответа
-                    reply = response.choices[0].message.content.strip()
-                    
-                    # Фиксируем успех ключа
-                    await cls.mark_success(db, key_obj)
-                    
-                    # Сохраняем подробный успешный лог взаимодействия
-                    usage = getattr(response, 'usage', None)
-                    prompt_tokens = usage.prompt_tokens if usage else 0
-                    completion_tokens = usage.completion_tokens if usage else 0
-                    total_tokens = usage.total_tokens if usage else 0
-                    
-                    await cls.log_interaction(
-                        db=db,
-                        key_id=key_obj.id,
-                        model=model,
-                        action_type=action_type,
-                        prompt=prompt_log_text,
-                        response=reply,
-                        status="success",
-                        prompt_tokens=prompt_tokens,
-                        completion_tokens=completion_tokens,
-                        total_tokens=total_tokens,
-                        account_id=account_id
-                    )
-                    
-                    return reply
-                    
-                except litellm.NotFoundError as e:
-                    # Если модель не найдена на этом провайдере/аккаунте, пробуем следующую
-                    logger.warning(f"Модель {model} не найдена или не развернута: {str(e)}. Пробуем следующую из списка...")
-                    await cls.log_interaction(
-                        db=db,
-                        key_id=key_obj.id,
-                        model=model,
-                        action_type=action_type,
-                        prompt=prompt_log_text,
-                        response=None,
-                        status="error",
-                        error_message=f"Model NotFoundError: {str(e)}",
-                        account_id=account_id
-                    )
-                    continue
-                except Exception as e:
-                    # Если другая ошибка (неверный ключ, лимиты), фиксируем сбой ключа и выходим из цикла моделей, чтобы взять другой ключ!
-                    logger.warning(f"Сбой вызова ИИ с ключом ID {key_obj.id} для модели {model}: {str(e)}")
-                    await cls.log_interaction(
-                        db=db,
-                        key_id=key_obj.id,
-                        model=model,
-                        action_type=action_type,
-                        prompt=prompt_log_text,
-                        response=None,
-                        status="error",
-                        error_message=str(e),
-                        account_id=account_id
-                    )
-                    break
-            else:
-                # Если все модели из списка выдали NotFoundError, засчитываем попытку ключа и идем на следующий круг
+                base_delay = 3.0
+                max_retries = 4  # 3s → 6s → 12s → 24s
+
+                for retry in range(max_retries):
+                    try:
+                        logger.info(f"Запрос к ИИ (ID ключа: {key_obj.id}) с моделью {model}...")
+                        response = await litellm.acompletion(
+                            model=model,
+                            custom_llm_provider="fireworks_ai",
+                            messages=messages,
+                            api_key=key_obj.key_value,
+                            temperature=0.7,
+                            max_tokens=3000,
+                            timeout=90.0
+                        )
+
+                        # Извлекаем текст ответа
+                        reply = response.choices[0].message.content.strip()
+
+                        # Фиксируем успех ключа
+                        await cls.mark_success(db, key_obj)
+
+                        # Сохраняем подробный успешный лог взаимодействия
+                        usage = getattr(response, 'usage', None)
+                        prompt_tokens = usage.prompt_tokens if usage else 0
+                        completion_tokens = usage.completion_tokens if usage else 0
+                        total_tokens = usage.total_tokens if usage else 0
+
+                        await cls.log_interaction(
+                            db=db,
+                            key_id=key_obj.id,
+                            model=model,
+                            action_type=action_type,
+                            prompt=prompt_log_text,
+                            response=reply,
+                            status="success",
+                            prompt_tokens=prompt_tokens,
+                            completion_tokens=completion_tokens,
+                            total_tokens=total_tokens,
+                            account_id=account_id
+                        )
+
+                        return reply
+
+                    except litellm.RateLimitError as e:
+                        # Exponential backoff — не бросаем ключ, ждём
+                        delay = base_delay * (2 ** retry)  # 3 → 6 → 12 → 24
+                        logger.warning(
+                            f"Rate limit на {model} (попытка {retry + 1}/{max_retries}), "
+                            f"жду {delay:.0f}с..."
+                        )
+                        await cls.mark_key_failure(db, key_obj, error=e)
+                        if retry < max_retries - 1:
+                            await asyncio.sleep(delay)
+                            fresh_key = await cls.get_next_key(db)
+                            if fresh_key:
+                                key_obj = fresh_key
+                            continue
+                        else:
+                            break  # Все ретраи на эту модель → следующая модель
+
+                    except litellm.NotFoundError as e:
+                        # Модель не найдена — сразу следующая
+                        logger.warning(f"Модель {model} не найдена: {str(e)}. Пробуем следующую...")
+                        await cls.log_interaction(
+                            db=db,
+                            key_id=key_obj.id,
+                            model=model,
+                            action_type=action_type,
+                            prompt=prompt_log_text,
+                            response=None,
+                            status="error",
+                            error_message=f"Model NotFoundError: {str(e)}",
+                            account_id=account_id
+                        )
+                        break  # Сразу следующая модель
+
+                    except Exception as e:
+                        logger.warning(f"Сбой вызова ИИ с ключом ID {key_obj.id} для модели {model}: {str(e)}")
+                        await cls.log_interaction(
+                            db=db,
+                            key_id=key_obj.id,
+                            model=model,
+                            action_type=action_type,
+                            prompt=prompt_log_text,
+                            response=None,
+                            status="error",
+                            error_message=str(e),
+                            account_id=account_id
+                        )
+                        break  # Другая ошибка — сразу следующая модель
+
+
                 attempt += 1
                 await cls.mark_failure(db, key_obj)
                 continue
