@@ -132,28 +132,96 @@ export default function AgentsTab() {
     sse.onmessage = (event) => {
       try {
         const data = JSON.parse(event.data);
+
         if (data.type === 'log') {
+          // Новая запись лога от агента
           setLogs((prev) => (prev.some((item) => item.id === data.id) ? prev : [...prev, data]));
-        } else if (data.type === 'state') {
-          if (data.agent_states) setAgentStates((prev) => ({ ...prev, ...data.agent_states }));
+
+        } else if (data.type === 'snapshot') {
+          // Начальный снимок при подключении SSE — массив всех состояний агентов
+          if (Array.isArray(data.agent_states)) {
+            const statesMap: Record<string, AgentState> = {};
+            for (const s of data.agent_states) {
+              statesMap[s.agent_name] = s;
+            }
+            setAgentStates((prev) => ({ ...prev, ...statesMap }));
+          }
           setActiveRun((prev) => {
-            if (!prev) return null;
-            return { ...prev, status: data.run_status, total_cost_tokens: data.total_cost_tokens };
+            if (!prev) return prev;
+            return {
+              ...prev,
+              status: data.run_status,
+              total_cost_tokens: data.total_cost_tokens ?? prev.total_cost_tokens,
+              categories_done: data.categories_done ?? prev.categories_done,
+              categories_total: data.categories_total ?? prev.categories_total,
+            };
           });
+
+        } else if (data.type === 'state') {
+          // Обновление одного агента: { agent_name, status, current_task, tokens_used, ... }
+          if (data.agent_name) {
+            setAgentStates((prev) => ({
+              ...prev,
+              [data.agent_name]: {
+                agent_name: data.agent_name,
+                parent_agent: data.parent_agent ?? null,
+                category_context: data.category_context ?? null,
+                status: data.status ?? 'pending',
+                current_task: data.current_task,
+                progress: data.progress,
+                tokens_used: data.tokens_used ?? 0,
+                retry_count: data.retry_count,
+                error_message: data.error_message,
+                updated_at: data.updated_at,
+              },
+            }));
+          }
+
+        } else if (data.type === 'progress') {
+          // Прогресс категорий: { categories_done, categories_total }
+          setActiveRun((prev) => {
+            if (!prev) return prev;
+            return {
+              ...prev,
+              categories_done: data.categories_done ?? prev.categories_done,
+              categories_total: data.categories_total ?? prev.categories_total,
+            };
+          });
+
+        } else if (data.type === 'run_meta') {
+          // Обновление токенов и статуса run
+          setActiveRun((prev) => {
+            if (!prev) return prev;
+            return {
+              ...prev,
+              status: data.run_status ?? prev.status,
+              total_cost_tokens: data.total_cost_tokens ?? prev.total_cost_tokens,
+            };
+          });
+
         } else if (data.type === 'done') {
           sse.close();
           fetchLotsForRun(runId);
           fetchPastRuns();
           fetchInsights();
           showToast(`Анализ завершён. Создано ${data.lots_count ?? 0} лотов.`);
+          setActiveRun((prev) => prev ? { ...prev, status: 'completed' } : prev);
+
         } else if (data.type === 'error') {
           sse.close();
           showError(data.message || 'Произошла ошибка сессии.');
+          setActiveRun((prev) => prev ? { ...prev, status: 'failed' } : prev);
         }
+
       } catch (err) { console.error('Ошибка парсинга SSE:', err); }
     };
 
-    sse.onerror = (err) => { console.error('SSE сбой:', err); };
+    sse.onerror = () => {
+      // При разрыве SSE — переподключаемся через 3с если run ещё активен
+      setTimeout(() => {
+        if (sseRef.current === sse) connectSSE(runId);
+      }, 3000);
+    };
   };
 
   const handleStartAnalysis = async () => {

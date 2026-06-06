@@ -76,15 +76,44 @@ class AIService:
         await db.commit()
 
     @classmethod
-    async def mark_key_failure(cls, db: AsyncSession, key: AIKey):
+    async def mark_key_failure(cls, db: AsyncSession, key: AIKey, error: Exception = None):
         """
-        Фиксирует ошибку при использовании ключа ИИ. Если ошибок >= 5, ключ деактивируется.
+        Фиксирует ошибку при использовании ключа ИИ.
+        При rate limit (429) — НЕ деактивируем, просто обновляем last_used_at.
+        Деактивация только при реальных auth/permanent ошибках (401, 403).
         """
-        key.error_count += 1
+        error_str = str(error).lower() if error else ""
+        is_rate_limit = (
+            "429" in error_str or
+            "rate limit" in error_str or
+            "rate_limit" in error_str or
+            "too many requests" in error_str or
+            "quota" in error_str
+        )
+        is_auth_error = (
+            "401" in error_str or
+            "403" in error_str or
+            "unauthorized" in error_str or
+            "invalid api key" in error_str or
+            "authentication" in error_str
+        )
+
         key.last_used_at = datetime.utcnow()
-        if key.error_count >= 5:
+
+        if is_rate_limit:
+            # Rate limit — ключ живой, просто временно перегружен. Не трогаем error_count.
+            logger.warning(f"Ключ ИИ (ID: {key.id}) получил rate limit, пропускаем.")
+        elif is_auth_error:
+            # Невалидный ключ — деактивируем сразу
             key.is_active = False
-            logger.error(f"Ключ ИИ (ID: {key.id}) деактивирован из-за частых ошибок.")
+            logger.error(f"Ключ ИИ (ID: {key.id}) деактивирован: auth error.")
+        else:
+            # Другие ошибки (сеть, таймаут, 5xx) — считаем, деактивируем при >=5
+            key.error_count += 1
+            if key.error_count >= 5:
+                key.is_active = False
+                logger.error(f"Ключ ИИ (ID: {key.id}) деактивирован из-за {key.error_count} ошибок подряд.")
+
         db.add(key)
         await db.commit()
 

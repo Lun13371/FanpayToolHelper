@@ -76,9 +76,11 @@ async def startup_event():
     # (ACTIVE_TASKS очищается при перезапуске процесса, задачи теряются)
     from app.database import async_session_maker
     from app.models.agents import AgentRun
+    from app.models.ai_key import AIKey
     from sqlmodel import select
     from datetime import datetime as _dt
     async with async_session_maker() as session:
+        # Сбрасываем зависшие runs
         res = await session.execute(select(AgentRun).where(AgentRun.status == "running"))
         stale_runs = res.scalars().all()
         if stale_runs:
@@ -87,6 +89,17 @@ async def startup_event():
                 r.status = "failed"
                 r.completed_at = _dt.utcnow()
                 session.add(r)
+            await session.commit()
+
+        # Сбрасываем error_count у деактивированных ключей — могли накопить ошибки из-за rate limit
+        key_res = await session.execute(select(AIKey).where(AIKey.is_active == False))
+        deactivated_keys = key_res.scalars().all()
+        if deactivated_keys:
+            logger.info(f"Сброс error_count для {len(deactivated_keys)} деактивированных ключей")
+            for k in deactivated_keys:
+                k.error_count = 0
+                k.is_active = True
+                session.add(k)
             await session.commit()
 
     logger.info("Приложение Fanpay Helper успешно запущено и готово к работе!")

@@ -249,7 +249,7 @@ class AgentOrchestrator:
             except asyncio.CancelledError:
                 raise
             except Exception as e:
-                await AIService.mark_key_failure(db, key_obj)
+                await AIService.mark_key_failure(db, key_obj, error=e)
                 last_exception = e
                 continue
         raise last_exception if last_exception else RuntimeError("Все модели-кандидаты вернули ошибку")

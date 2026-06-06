@@ -104,9 +104,8 @@ class SemanticMemoryService:
         В противном случае (или при сбое) делает вычисление схожести на Python (fallback).
         """
         vector = await cls.get_embedding(db, query_text)
-        if not vector:
+        if not vector or not isinstance(vector, (list, tuple)) or len(vector) == 0:
             logger.warning("Не удалось получить эмбеддинг для поиска. Делаем простой текстовый поиск...")
-            # Fallback на простой LIKE поиск
             stmt = select(AgentInsight).where(AgentInsight.content.like(f"%{query_text}%")).limit(limit)
             res = await db.execute(stmt)
             return list(res.scalars().all())
