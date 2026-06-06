@@ -109,6 +109,7 @@ export interface AgentRun {
   total_cost_tokens: number;
   created_at: string;
   completed_at?: string;
+  lots_count?: number;
 }
 
 export interface AgentState {

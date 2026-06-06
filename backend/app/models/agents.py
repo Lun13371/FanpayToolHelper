@@ -8,6 +8,7 @@ class AgentRun(SQLModel, table=True):
     __tablename__ = "agent_runs"
     
     id: Optional[int] = Field(default=None, primary_key=True)
+    user_id: Optional[int] = Field(default=None, foreign_key="users.id", index=True)
     status: str = Field(default="idle", index=True)  # idle, running, completed, failed
     mode: str = Field(default="auto")  # auto, manual, full
     limit_categories: int = Field(default=5)
