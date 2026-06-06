@@ -199,32 +199,33 @@ class AgentOrchestrator:
         category_context: Optional[str] = None,
     ) -> Dict[str, Any]:
         # Подбираем модели по типу агента
-        # Дорогие/умные — для логических задач (ранжирование, ценообразование)
+        # Умные — для логических задач (ранжирование, ценообразование)
         # Дешёвые/быстрые — для генерации текста, скрапинга
+        # Только serverless! kimi-k2-instruct — НЕ serverless, даёт 404
         _smart_agents = {cls.SUB_CATEGORY_RANKER, cls.AGENT_SELECTOR, cls.SUB_MARGIN_ANALYST, cls.AGENT_MEMORY}
         _cheap_agents = {cls.SUB_MARKET_SCRAPER, cls.SUB_COPYWRITER, cls.AGENT_GENERATOR}
-
         if agent_name in _smart_agents:
-            # Умные задачи: Kimi K2 Instruct → MiniMax M2.5 → GPT OSS 20B
+            # Умные задачи: MiniMax M2.7 → MiniMax M2.5 → GPT OSS 20B
             candidate_models = [
-                "accounts/fireworks/models/kimi-k2-instruct",    # $0.60/M, 262k ctx ✅
-                "accounts/fireworks/models/minimax-m2p5",         # $0.30/M, 196k ctx ✅
-                "accounts/fireworks/models/gpt-oss-20b",          # $0.07/M, 131k ctx ✅
+                "accounts/fireworks/models/minimax-m2p7",         # $0.30/M, 196k ctx, serverless ✅
+                "accounts/fireworks/models/minimax-m2p5",         # $0.30/M, 196k ctx, serverless ✅
+                "accounts/fireworks/models/gpt-oss-20b",          # $0.07/M, 131k ctx, serverless ✅
             ]
         elif agent_name in _cheap_agents:
-            # Генерация текста/лотов: MiniMax M2.5 (дешёво) → GPT OSS 20B → Kimi K2
+            # Генерация текста/лотов: GPT OSS 20B (самый дешёвый) → MiniMax M2.5 → M2.7
             candidate_models = [
-                "accounts/fireworks/models/minimax-m2p5",         # $0.30/M, 196k ctx ✅
-                "accounts/fireworks/models/gpt-oss-20b",          # $0.07/M, 131k ctx ✅
-                "accounts/fireworks/models/kimi-k2-instruct",     # $0.60/M, fallback ✅
+                "accounts/fireworks/models/gpt-oss-20b",          # $0.07/M, 131k ctx, serverless ✅
+                "accounts/fireworks/models/minimax-m2p5",         # $0.30/M, 196k ctx, serverless ✅
+                "accounts/fireworks/models/minimax-m2p7",         # $0.30/M, 196k ctx, serverless ✅
             ]
         else:
-            # По умолчанию: балансируем цену и качество
+            # По умолчанию: только serverless модели
             candidate_models = [
-                "accounts/fireworks/models/minimax-m2p5",         # $0.30/M ✅
-                "accounts/fireworks/models/kimi-k2-instruct",     # $0.60/M ✅
-                "accounts/fireworks/models/llama-v3p3-70b-instruct", # $0.90/M ✅
+                "accounts/fireworks/models/minimax-m2p5",         # $0.30/M, serverless ✅
+                "accounts/fireworks/models/minimax-m2p7",         # $0.30/M, serverless ✅
+                "accounts/fireworks/models/gpt-oss-20b",          # $0.07/M, serverless ✅
             ]
+
         messages = [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},

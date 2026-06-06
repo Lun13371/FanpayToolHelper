@@ -214,14 +214,15 @@ class AIService:
                     ]
                 })
 
-        # Актуальные модели Fireworks (June 2026) для чат-ответов
-        # kimi-k2-instruct: $0.60/M, 262k ctx — лучший для диалогов
-        # minimax-m2p5: $0.30/M, 196k ctx — дешёвый fallback
-        # gpt-oss-20b: $0.07/M, 131k ctx — самый дешёвый fallback
+        # Актуальные serverless модели Fireworks (June 2026) для чат-ответов
+        # Только serverless! kimi-k2-instruct — НЕ serverless (only On-demand), даёт 404
+        # minimax-m2p7: $0.30/M, 196k ctx — serverless ✅
+        # minimax-m2p5: $0.30/M, 196k ctx — serverless ✅
+        # gpt-oss-20b: $0.07/M, 131k ctx — serverless ✅
         text_models = [
-            "accounts/fireworks/models/kimi-k2-instruct",     # $0.60/M, 262k ctx ✅
-            "accounts/fireworks/models/minimax-m2p5",          # $0.30/M, 196k ctx ✅
-            "accounts/fireworks/models/gpt-oss-20b",           # $0.07/M, 131k ctx ✅
+            "accounts/fireworks/models/minimax-m2p7",          # $0.30/M, 196k ctx, serverless ✅
+            "accounts/fireworks/models/minimax-m2p5",          # $0.30/M, 196k ctx, serverless ✅
+            "accounts/fireworks/models/gpt-oss-20b",           # $0.07/M, 131k ctx, serverless ✅
         ]
         
         # Vision: Kimi K2.6 поддерживает Vision ($0.95/M), MiniMax M2.7 ($0.30/M)
@@ -378,9 +379,9 @@ class AIService:
         ]
 
         candidate_models = [
-            "accounts/fireworks/models/kimi-k2-instruct",     # $0.60/M, 262k ctx ✅
-            "accounts/fireworks/models/minimax-m2p5",          # $0.30/M, 196k ctx ✅
-            "accounts/fireworks/models/gpt-oss-20b",           # $0.07/M, 131k ctx ✅
+            "accounts/fireworks/models/minimax-m2p7",          # $0.30/M, 196k ctx, serverless ✅
+            "accounts/fireworks/models/minimax-m2p5",          # $0.30/M, 196k ctx, serverless ✅
+            "accounts/fireworks/models/gpt-oss-20b",           # $0.07/M, 131k ctx, serverless ✅
         ]
 
         max_attempts = 3
