@@ -169,3 +169,73 @@ export interface GeneratedLot {
   digital_content_idea?: string | null;
   digital_difficulty?: 'easy' | 'medium' | 'hard' | null;
 }
+
+// ─── AI Чат ────────────────────────────────────────────────────────────────
+
+export interface ChatModelInfo {
+  id: string;
+  display_name?: string | null;
+  status?: string | null;
+  supports_tools?: boolean | null;
+  supports_streaming?: boolean | null;
+  pricing?: Record<string, any> | null;
+}
+
+export interface ChatSessionInfo {
+  id: number;
+  title: string;
+  model: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ChatMessageInfo {
+  id: number;
+  session_id: number;
+  role: 'user' | 'assistant' | 'tool';
+  content: string;
+  tool_name?: string | null;
+  tool_payload?: {
+    tool_calls?: Array<{
+      id: string;
+      type: string;
+      function: { name: string; arguments: string };
+    }>;
+    tool_call_id?: string;
+    args?: Record<string, any>;
+    ui?: { type: string; draft?: TemplateDraft; request?: PublishRequest | DeleteRequest };
+  } | null;
+  created_at: string;
+}
+
+export interface TemplateFormOptions {
+  fields: Record<string, any>;
+  options: Record<string, Array<{ value: string; text: string; selected?: boolean }>>;
+}
+
+export interface TemplateDraft {
+  name: string;
+  node_id: string;
+  game_name: string;
+  subcategory_name: string;
+  fields: Record<string, any>;
+  form?: TemplateFormOptions | null;
+}
+
+export interface PublishRequest {
+  action: 'publish';
+  template_id: number;
+  template_name: string;
+  game_name: string;
+  subcategory_name: string;
+  node_id: string;
+  fields: Record<string, any>;
+}
+
+export interface DeleteRequest {
+  action: 'delete';
+  template_id: number;
+  template_name: string;
+  game_name: string;
+  subcategory_name: string;
+}

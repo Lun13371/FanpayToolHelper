@@ -19,8 +19,8 @@ class AIService:
         Разбирает строку с ключами (разделенными запятыми, пробелами или переносами строк)
         и возвращает список чистых ключей.
         """
-        # Находим все подстроки, похожие на API ключи (обычно fw_... или аналогичные буквенно-цифровые строки)
-        # Для Fireworks AI ключи часто начинаются с fw_
+        # Находим все подстроки, похожие на API ключи (sk-syntee-... или аналогичные
+        # буквенно-цифровые строки, разделённые запятыми/пробелами/переносами строк)
         raw_keys = re.split(r'[\s,\n\r]+', keys_string)
         clean_keys = [k.strip() for k in raw_keys if len(k.strip()) > 10]
         return clean_keys
@@ -215,24 +215,17 @@ class AIService:
                     ]
                 })
 
-        # Актуальные serverless модели Fireworks (June 2026) для чат-ответов
-        # Только serverless! kimi-k2-instruct — НЕ serverless (only On-demand), даёт 404
-        # minimax-m2p7: $0.30/M, 196k ctx — serverless ✅
-        # minimax-m2p5: $0.30/M, 196k ctx — serverless ✅
-        # gpt-oss-20b: $0.07/M, 131k ctx — serverless ✅
-        text_models = [
-            "accounts/fireworks/models/minimax-m2p7",          # $0.30/M, 196k ctx, serverless ✅
-            "accounts/fireworks/models/minimax-m2p5",          # $0.30/M, 196k ctx, serverless ✅
-            "accounts/fireworks/models/gpt-oss-20b",           # $0.07/M, 131k ctx, serverless ✅
-        ]
-        
-        # Vision: Kimi K2.6 поддерживает Vision ($0.95/M), MiniMax M2.7 ($0.30/M)
-        vision_models = [
-            "accounts/fireworks/models/kimi-k2p6",             # $0.95/M Vision ✅
-            "accounts/fireworks/models/minimax-m2p7",          # $0.30/M Vision ✅
-        ]
-        
-        candidate_models = vision_models if screenshot_base64 else text_models
+        # Модели берутся из настроек Syntee Gateway (вкладка «Syntee Gateway»).
+        # Приоритет: значение из AISettings → авто-выбор из доступных групп гейтвея.
+        from app.services import llm_client
+        candidate_models = await llm_client.resolve_chat_models(
+            db, "vision" if screenshot_base64 else "text"
+        )
+        if not candidate_models:
+            raise RuntimeError(
+                "Не выбраны модели ИИ: настройте Syntee Gateway во вкладке «Syntee Gateway» "
+                "и добавьте ключи sk-syntee-... во вкладке «Глобальные ключи»"
+            )
 
         # Формируем текст промпта для сохранения логов
         prompt_log_text = f"[System Prompt]\n{system_prompt}\n\n[History]\n" + "\n".join([f"{sender}: {text}" for sender, text in history])
@@ -252,9 +245,9 @@ class AIService:
                 for retry in range(max_retries):
                     try:
                         logger.info(f"Запрос к ИИ (ID ключа: {key_obj.id}) с моделью {model}...")
-                        response = await litellm.acompletion(
+                        response = await llm_client.gateway_completion(
+                            db,
                             model=model,
-                            custom_llm_provider="fireworks_ai",
                             messages=messages,
                             api_key=key_obj.key_value,
                             temperature=0.7,
@@ -364,7 +357,7 @@ class AIService:
         reviews: List[dict]
     ) -> List[dict]:
         """
-        Использует ИИ (быструю и экономную модель Qwen или Llama) для пакетной классификации отзывов.
+        Использует ИИ (дешёвую модель из настроек Syntee Gateway) для пакетной классификации отзывов.
         Возвращает список отзывов с добавленныи ключом "tags".
         Если вызов ИИ завершился ошибкой или ключей нет, возвращается исходный список (с тегами по умолчанию).
         """
@@ -400,11 +393,11 @@ class AIService:
             {"role": "user", "content": user_input}
         ]
 
-        candidate_models = [
-            "accounts/fireworks/models/minimax-m2p7",          # $0.30/M, 196k ctx, serverless ✅
-            "accounts/fireworks/models/minimax-m2p5",          # $0.30/M, 196k ctx, serverless ✅
-            "accounts/fireworks/models/gpt-oss-20b",           # $0.07/M, 131k ctx, serverless ✅
-        ]
+        # Дешёвая модель из настроек Syntee Gateway (вкладка «Syntee Gateway»)
+        from app.services import llm_client
+        candidate_models = await llm_client.resolve_chat_models(db, "cheap")
+        if not candidate_models:
+            return []
 
         max_attempts = 3
         attempt = 0
@@ -417,9 +410,9 @@ class AIService:
                 
             for model in candidate_models:
                 try:
-                    response = await litellm.acompletion(
+                    response = await llm_client.gateway_completion(
+                        db,
                         model=model,
-                        custom_llm_provider="fireworks_ai",
                         messages=messages,
                         api_key=current_key.key_value,
                         temperature=0.1, # Низкая температура для точного следования формату

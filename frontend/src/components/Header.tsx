@@ -1,4 +1,4 @@
-import { Sparkles, LogOut } from 'lucide-react';
+import { Sparkles, LogOut, Bot } from 'lucide-react';
 import { useAppContext } from '../context/AppContext';
 
 export default function Header() {
@@ -63,6 +63,17 @@ export default function Header() {
           >
             <Sparkles className="w-3.5 h-3.5 text-brand-cyan" />
             AI-Анализ
+          </button>
+          <button
+            onClick={() => setActiveTab('ai-chat')}
+            className={`py-1.5 px-3.5 rounded-xl text-xs font-medium shrink-0 transition-all flex items-center gap-1 ${
+              activeTab === 'ai-chat'
+                ? 'bg-brand-cyan/20 text-white shadow-sm border border-brand-cyan/30'
+                : 'text-brand-cyan hover:text-white bg-brand-cyan/5 border border-brand-cyan/10'
+            }`}
+          >
+            <Bot className="w-3.5 h-3.5 text-brand-cyan" />
+            AI Чат
           </button>
           {user?.role === 'admin' && (
             <>

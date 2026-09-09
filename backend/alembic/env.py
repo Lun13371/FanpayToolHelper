@@ -39,6 +39,8 @@ from app.models import (
     AgentLog,
     GeneratedLot,
     AgentInsight,
+    ChatSession,
+    ChatMessage,
 )
 from app.config import settings
 

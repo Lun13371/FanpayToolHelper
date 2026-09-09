@@ -7,8 +7,10 @@ from app.models.delivery import AutoDeliveryItem
 from app.models.review import AutoReviewTemplate
 from app.models.competitor import CompetitorBlacklist
 from app.models.ai_key import AIKey
+from app.models.ai_settings import AISettings
 from app.models.log import SystemLogs
 from app.models.agents import AgentRun, AgentState, AgentLog, GeneratedLot, AgentInsight
+from app.models.chat import ChatSession, ChatMessage
 
 __all__ = [
     "User",
@@ -21,10 +23,13 @@ __all__ = [
     "AutoReviewTemplate",
     "CompetitorBlacklist",
     "AIKey",
+    "AISettings",
     "SystemLogs",
     "AgentRun",
     "AgentState",
     "AgentLog",
     "GeneratedLot",
     "AgentInsight",
+    "ChatSession",
+    "ChatMessage",
 ]

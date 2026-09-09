@@ -12,8 +12,10 @@ from app.api.lot_templates import router as templates_router
 from app.api.chats import router as chats_router
 from app.api.delivery import router as delivery_router
 from app.api.ai_keys import router as ai_keys_router
+from app.api.ai_settings import router as ai_settings_router
 from app.api.logs import router as logs_router, ws_router as logs_ws_router
 from app.api.agents import router as agents_router
+from app.api.chat import router as chat_router
 
 # Настраиваем логирование для приложения
 logging.basicConfig(
@@ -51,7 +53,9 @@ app.include_router(templates_router, prefix="/api/v1")
 app.include_router(chats_router, prefix="/api/v1")
 app.include_router(delivery_router, prefix="/api/v1")
 app.include_router(ai_keys_router, prefix="/api/v1")
+app.include_router(ai_settings_router, prefix="/api/v1")
 app.include_router(agents_router, prefix="/api/v1")
+app.include_router(chat_router, prefix="/api/v1")
 app.include_router(logs_router, prefix="/api/v1")     # REST /api/v1/logs
 app.include_router(logs_ws_router)                    # WebSocket /ws/logs/{account_id}
 

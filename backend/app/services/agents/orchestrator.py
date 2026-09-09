@@ -213,24 +213,19 @@ class AgentOrchestrator:
         }
         _cheap_agents = {cls.SUB_MARKET_SCRAPER, cls.SUB_COPYWRITER, cls.AGENT_GENERATOR}
 
+        # Модели из настроек Syntee Gateway (вкладка «Syntee Gateway»):
+        # smart-агенты → text_model, cheap-агенты → cheap_model
+        from app.services import llm_client
         if agent_name in _smart_agents:
-            candidate_models = [
-                "accounts/fireworks/models/minimax-m2p7",
-                "accounts/fireworks/models/minimax-m2p5",
-                "accounts/fireworks/models/gpt-oss-20b",
-            ]
+            candidate_models = await llm_client.resolve_chat_models(db, "text")
         elif agent_name in _cheap_agents:
-            candidate_models = [
-                "accounts/fireworks/models/gpt-oss-20b",
-                "accounts/fireworks/models/minimax-m2p5",
-                "accounts/fireworks/models/minimax-m2p7",
-            ]
+            candidate_models = await llm_client.resolve_chat_models(db, "cheap")
         else:
-            candidate_models = [
-                "accounts/fireworks/models/minimax-m2p5",
-                "accounts/fireworks/models/minimax-m2p7",
-                "accounts/fireworks/models/gpt-oss-20b",
-            ]
+            candidate_models = await llm_client.resolve_chat_models(db, "text")
+        if not candidate_models:
+            raise RuntimeError(
+                "Не выбраны модели ИИ: настройте Syntee Gateway во вкладке «Syntee Gateway»"
+            )
 
         messages = [
             {"role": "system", "content": system_prompt},
@@ -248,9 +243,9 @@ class AgentOrchestrator:
 
             for attempt in range(max_retries_per_model):
                 try:
-                    response = await litellm.acompletion(
+                    response = await llm_client.gateway_completion(
+                        db,
                         model=model,
-                        custom_llm_provider="fireworks_ai",
                         messages=messages,
                         api_key=key_obj.key_value,
                         temperature=0.2,

@@ -10,6 +10,7 @@ import TemplatesTab from './components/tabs/TemplatesTab';
 import AIKeysTab from './components/tabs/AIKeysTab';
 import AdminTab from './components/tabs/AdminTab';
 import AgentsTab from './components/tabs/AgentsTab';
+import AIChatTab from './components/tabs/AIChatTab';
 
 export default function App() {
   const { token, user, activeTab } = useAppContext();
@@ -33,6 +34,7 @@ export default function App() {
           {activeTab === 'manager' && <FunpayManagerTab key="manager" />}
           {activeTab === 'templates' && <TemplatesTab key="templates" />}
           {activeTab === 'agents' && <AgentsTab key="agents" />}
+          {activeTab === 'ai-chat' && <AIChatTab key="ai-chat" />}
           {activeTab === 'ai-keys' && user.role === 'admin' && <AIKeysTab key="ai-keys" />}
           {activeTab === 'admin' && user.role === 'admin' && <AdminTab key="admin" />}
         </AnimatePresence>

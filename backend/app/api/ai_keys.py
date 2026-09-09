@@ -130,24 +130,15 @@ class GeneralAIStats(BaseModel):
 
 
 def estimate_cost(model: str, prompt_tokens: int, completion_tokens: int) -> float:
-    """Оценивает примерную стоимость запроса к Fireworks AI (в USD за 1 млн токенов)."""
-    model_lower = model.lower()
-    if "kimi" in model_lower:
-        rate_input = 0.50
-        rate_output = 0.50
-    elif "llama-3-3" in model_lower or "llama-3.3" in model_lower:
-        rate_input = 0.90
-        rate_output = 0.90
-    elif "qwen" in model_lower:
-        rate_input = 0.40
-        rate_output = 0.40
-    elif "deepseek" in model_lower or "gpt-oss" in model_lower:
-        rate_input = 1.00
-        rate_output = 1.00
-    else:
-        rate_input = 0.60
-        rate_output = 0.60
-        
+    """Грубая оценка стоимости запроса (в USD за 1 млн токенов).
+
+    Точные тарифы зависят от выбранной группы моделей Syntee Gateway —
+    здесь используется усреднённая ставка. Точную статистику смотрите
+    в личном кабинете гейтвея.
+    """
+    rate_input = 0.60
+    rate_output = 0.60
+
     cost_prompt = (prompt_tokens / 1_000_000) * rate_input
     cost_completion = (completion_tokens / 1_000_000) * rate_output
     return cost_prompt + cost_completion

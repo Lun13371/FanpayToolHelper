@@ -4,7 +4,7 @@ import {
   Key, Plus, RefreshCw, ToggleLeft, ToggleRight, Trash2, 
   BarChart3, Cpu, Coins, CheckCircle2, XCircle, 
   ChevronDown, ChevronUp, Copy, Check, Calendar,
-  History as HistoryIcon
+  History as HistoryIcon, Globe, Save, Zap
 } from 'lucide-react';
 import { useAppContext, API_URL } from '../../context/AppContext';
 import { handleMouseMove } from '../../utils/mouseTracker';
@@ -65,10 +65,65 @@ interface MessageBubble {
   text: string;
 }
 
+interface GatewayModelEntry {
+  id: string;
+  display_name: string | null;
+  description: string | null;
+  status: string | null;
+  supports_vision: boolean | null;
+  supports_tools: boolean | null;
+  supports_streaming: boolean | null;
+  max_tokens: number | null;
+  pricing: { input_price: number; output_price: number; unit: string } | null;
+}
+
+interface ModelSelectProps {
+  label: string;
+  value: string;
+  onChange: (v: string) => void;
+  models: GatewayModelEntry[];
+  visionOnly?: boolean;
+  embeddingOnly?: boolean;
+}
+
+function ModelSelect({ label, value, onChange, models, visionOnly, embeddingOnly }: ModelSelectProps) {
+  let filtered = models;
+  if (visionOnly) {
+    filtered = models.filter(m => m.supports_vision);
+  }
+  if (embeddingOnly) {
+    filtered = models.filter(m =>
+      `${m.id} ${m.display_name || ''}`.toLowerCase().includes('embed')
+    );
+  }
+  return (
+    <label className="block">
+      <span className="text-[10px] text-slate-400 uppercase tracking-wider font-semibold">{label}</span>
+      <select
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        className="mt-1 w-full bg-slate-950/40 border border-white/5 rounded-2xl py-2.5 px-4 text-xs text-white focus:outline-none focus:border-brand-cyan/40"
+      >
+        <option value="">— Авто (выберет гейтвей) —</option>
+        {filtered.map((m) => (
+          <option key={m.id} value={m.id} disabled={m.status !== 'available'}>
+            {m.display_name || m.id}
+            {m.status !== 'available' ? ' (недоступна)' : ''}
+            {m.pricing ? ` · $${m.pricing.input_price}/$${m.pricing.output_price} за 1M` : ''}
+          </option>
+        ))}
+      </select>
+      {embeddingOnly && (
+        <span className="text-[9px] text-slate-600">Размерность вектора должна быть 4096</span>
+      )}
+    </label>
+  );
+}
+
 export default function AIKeysTab() {
   const { token } = useAppContext();
   
-  const [activeSubTab, setActiveSubTab] = useState<'keys' | 'stats'>('keys');
+  const [activeSubTab, setActiveSubTab] = useState<'keys' | 'stats' | 'gateway'>('keys');
   const [aiKeys, setAiKeys] = useState<AIKey[]>([]);
   const [aiKeysBulkText, setAiKeysBulkText] = useState('');
   const [loading, setLoading] = useState(false);
@@ -83,6 +138,18 @@ export default function AIKeysTab() {
   const [expandedLogId, setExpandedLogId] = useState<number | null>(null);
   const [copiedTextId, setCopiedTextId] = useState<string | null>(null);
 
+  // Syntee Gateway — настройки подключения и моделей
+  const [gwUrl, setGwUrl] = useState('https://syntee.fun/v1');
+  const [gwTextModel, setGwTextModel] = useState('');
+  const [gwVisionModel, setGwVisionModel] = useState('');
+  const [gwCheapModel, setGwCheapModel] = useState('');
+  const [gwEmbedModel, setGwEmbedModel] = useState('');
+  const [gwModels, setGwModels] = useState<GatewayModelEntry[]>([]);
+  const [gwLoading, setGwLoading] = useState(false);
+  const [gwSaving, setGwSaving] = useState(false);
+  const [gwTesting, setGwTesting] = useState(false);
+  const [gwTestMsg, setGwTestMsg] = useState<{ ok: boolean; text: string } | null>(null);
+
   useEffect(() => {
     if (token) {
       fetchAIKeys();
@@ -95,6 +162,98 @@ export default function AIKeysTab() {
       fetchLogs(true);
     }
   }, [activeSubTab, token]);
+
+  useEffect(() => {
+    if (activeSubTab === 'gateway' && token) {
+      fetchGatewayData();
+    }
+  }, [activeSubTab, token]);
+
+  const fetchGatewayData = async () => {
+    setGwLoading(true);
+    setGwTestMsg(null);
+    try {
+      const [sRes, mRes] = await Promise.all([
+        fetch(`${API_URL}/api/v1/ai-settings`, {
+          headers: { Authorization: `Bearer ${token}` }
+        }),
+        fetch(`${API_URL}/api/v1/ai-settings/models`, {
+          headers: { Authorization: `Bearer ${token}` }
+        }),
+      ]);
+      if (sRes.ok) {
+        const s = await sRes.json();
+        setGwUrl(s.gateway_url);
+        setGwTextModel(s.text_model || '');
+        setGwVisionModel(s.vision_model || '');
+        setGwCheapModel(s.cheap_model || '');
+        setGwEmbedModel(s.embedding_model || '');
+      }
+      if (mRes.ok) {
+        setGwModels(await mRes.json());
+      } else {
+        const d = await mRes.json().catch(() => null);
+        setGwTestMsg({ ok: false, text: d?.detail || 'Не удалось получить список моделей гейтвея' });
+      }
+    } catch (err) {
+      console.error(err);
+      setGwTestMsg({ ok: false, text: 'Ошибка сети при обращении к API' });
+    } finally {
+      setGwLoading(false);
+    }
+  };
+
+  const handleSaveGateway = async () => {
+    setGwSaving(true);
+    setGwTestMsg(null);
+    try {
+      const res = await fetch(`${API_URL}/api/v1/ai-settings`, {
+        method: 'PUT',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          gateway_url: gwUrl,
+          text_model: gwTextModel,
+          vision_model: gwVisionModel,
+          cheap_model: gwCheapModel,
+          embedding_model: gwEmbedModel,
+        })
+      });
+      if (res.ok) {
+        setGwTestMsg({ ok: true, text: 'Настройки Syntee Gateway сохранены' });
+      } else {
+        const d = await res.json().catch(() => null);
+        setGwTestMsg({ ok: false, text: d?.detail || 'Ошибка сохранения настроек' });
+      }
+    } catch {
+      setGwTestMsg({ ok: false, text: 'Ошибка сети при сохранении' });
+    } finally {
+      setGwSaving(false);
+    }
+  };
+
+  const handleTestGateway = async () => {
+    setGwTesting(true);
+    setGwTestMsg(null);
+    try {
+      const res = await fetch(`${API_URL}/api/v1/ai-settings/test`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      const d = await res.json();
+      if (res.ok) {
+        setGwTestMsg({ ok: true, text: d.message });
+      } else {
+        setGwTestMsg({ ok: false, text: d.detail || 'Тест не пройден' });
+      }
+    } catch {
+      setGwTestMsg({ ok: false, text: 'Ошибка сети при тесте' });
+    } finally {
+      setGwTesting(false);
+    }
+  };
 
   const fetchAIKeys = async () => {
     try {
@@ -279,13 +438,20 @@ export default function AIKeysTab() {
       className="space-y-6"
     >
       {/* Кнопки переключения под-вкладок */}
-      <div className="flex bg-slate-950/40 border border-white/5 p-1 rounded-2xl max-w-xs sm:max-w-sm relative z-10">
+      <div className="flex bg-slate-950/40 border border-white/5 p-1 rounded-2xl max-w-xs sm:max-w-2xl relative z-10">
         <button
           onClick={() => setActiveSubTab('keys')}
           className={`flex-1 flex items-center justify-center gap-2 py-2 sm:py-2.5 rounded-xl text-[11px] sm:text-xs font-semibold transition-all duration-300 ${activeSubTab === 'keys' ? 'bg-brand-cyan/10 text-brand-cyan border border-brand-cyan/20' : 'text-slate-400 hover:text-white'}`}
         >
           <Key className="w-3.5 h-3.5" />
           <span>Глобальные ключи</span>
+        </button>
+        <button
+          onClick={() => setActiveSubTab('gateway')}
+          className={`flex-1 flex items-center justify-center gap-2 py-2 sm:py-2.5 rounded-xl text-[11px] sm:text-xs font-semibold transition-all duration-300 ${activeSubTab === 'gateway' ? 'bg-brand-cyan/10 text-brand-cyan border border-brand-cyan/20' : 'text-slate-400 hover:text-white'}`}
+        >
+          <Globe className="w-3.5 h-3.5" />
+          <span>Syntee Gateway</span>
         </button>
         <button
           onClick={() => setActiveSubTab('stats')}
@@ -310,7 +476,7 @@ export default function AIKeysTab() {
             <div className="glow-bg rounded-3xl" />
             <h2 className="text-md font-bold text-white mb-4 relative z-10 flex items-center gap-2">
               <Key className="w-4 h-4 text-brand-cyan" />
-              <span>Управление глобальными ключами ИИ (Fireworks API)</span>
+              <span>Управление глобальными ключами ИИ (Syntee Gateway)</span>
             </h2>
 
             <form onSubmit={handleImportAIKeys} className="space-y-3 relative z-10 mb-6">
@@ -318,7 +484,7 @@ export default function AIKeysTab() {
                 value={aiKeysBulkText}
                 onChange={(e) => setAiKeysBulkText(e.target.value)}
                 className="w-full bg-slate-950/40 border border-white/5 rounded-2xl py-3 px-4 text-xs text-white focus:outline-none focus:border-brand-cyan/40 placeholder:text-slate-600"
-                placeholder="Вставьте ключи Fireworks API. Поддерживается пакетный ввод (через запятые или переносы строк)..."
+                placeholder="Вставьте ключи Syntee Gateway (sk-syntee-...). Поддерживается пакетный ввод (через запятые или переносы строк)..."
                 rows={4}
                 required
               />
@@ -369,6 +535,102 @@ export default function AIKeysTab() {
                   </div>
                 ))
               )}
+            </div>
+          </motion.div>
+        ) : activeSubTab === 'gateway' ? (
+          <motion.div
+            key="gateway-tab"
+            initial={{ opacity: 0, x: -10 }}
+            animate={{ opacity: 1, x: 0 }}
+            exit={{ opacity: 0, x: 10 }}
+            transition={{ duration: 0.2 }}
+            className="p-5 sm:p-6 rounded-3xl glow-card relative"
+            onMouseMove={handleMouseMove}
+          >
+            <div className="glow-bg rounded-3xl" />
+            <h2 className="text-md font-bold text-white mb-4 relative z-10 flex items-center gap-2">
+              <Globe className="w-4 h-4 text-brand-cyan" />
+              <span>Syntee Gateway — подключение и модели</span>
+            </h2>
+
+            <div className="space-y-4 relative z-10">
+              {/* Base URL + кнопки */}
+              <div className="flex flex-col sm:flex-row gap-2">
+                <input
+                  value={gwUrl}
+                  onChange={(e) => setGwUrl(e.target.value)}
+                  className="flex-1 bg-slate-950/40 border border-white/5 rounded-2xl py-2.5 px-4 text-xs text-white focus:outline-none focus:border-brand-cyan/40 placeholder:text-slate-600 font-mono"
+                  placeholder="https://syntee.fun/v1"
+                />
+                <div className="flex gap-2">
+                  <button
+                    onClick={handleSaveGateway}
+                    disabled={gwSaving}
+                    className="bg-brand-cyan/10 hover:bg-brand-cyan/15 text-brand-cyan border border-brand-cyan/20 py-2.5 px-5 rounded-xl text-xs font-semibold transition-all flex items-center justify-center gap-1.5 disabled:opacity-50"
+                  >
+                    {gwSaving ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Save className="w-3.5 h-3.5" />}
+                    <span>Сохранить</span>
+                  </button>
+                  <button
+                    onClick={handleTestGateway}
+                    disabled={gwTesting}
+                    className="bg-emerald-500/10 hover:bg-emerald-500/15 text-emerald-400 border border-emerald-500/20 py-2.5 px-5 rounded-xl text-xs font-semibold transition-all flex items-center justify-center gap-1.5 disabled:opacity-50"
+                  >
+                    {gwTesting ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Zap className="w-3.5 h-3.5" />}
+                    <span>Тест</span>
+                  </button>
+                </div>
+              </div>
+
+              {gwTestMsg && (
+                <div className={`text-[11px] px-4 py-2.5 rounded-xl border ${gwTestMsg.ok ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-400' : 'bg-red-500/10 border-red-500/20 text-red-400'}`}>
+                  {gwTestMsg.text}
+                </div>
+              )}
+
+              {gwLoading ? (
+                <div className="text-slate-500 text-center py-6 text-xs flex items-center justify-center gap-2">
+                  <RefreshCw className="w-4 h-4 animate-spin" />
+                  <span>Загрузка моделей с гейтвея...</span>
+                </div>
+              ) : (
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                  <ModelSelect
+                    label="Основная модель (чат-ответы, smart-агенты)"
+                    value={gwTextModel}
+                    onChange={setGwTextModel}
+                    models={gwModels}
+                  />
+                  <ModelSelect
+                    label="Vision-модель (скриншоты)"
+                    value={gwVisionModel}
+                    onChange={setGwVisionModel}
+                    models={gwModels}
+                    visionOnly
+                  />
+                  <ModelSelect
+                    label="Дешёвая модель (классификация отзывов, cheap-агенты)"
+                    value={gwCheapModel}
+                    onChange={setGwCheapModel}
+                    models={gwModels}
+                  />
+                  <ModelSelect
+                    label="Модель эмбеддингов (память агентов)"
+                    value={gwEmbedModel}
+                    onChange={setGwEmbedModel}
+                    models={gwModels}
+                    embeddingOnly
+                  />
+                </div>
+              )}
+
+              <div className="text-[10px] text-slate-500 leading-relaxed">
+                Ключи <code className="text-brand-cyan">sk-syntee-...</code> создаются в личном кабинете
+                syntee.fun и добавляются во вкладке «Глобальные ключи». Пустое поле = авто-выбор:
+                первая доступная группа с гейтвея (для Vision — с поддержкой изображений, для
+                эмбеддингов — группа с «embed» в названии).
+                {!gwLoading && gwModels.length > 0 && ` Групп на гейтвее: ${gwModels.length}.`}
+              </div>
             </div>
           </motion.div>
         ) : (
@@ -423,7 +685,7 @@ export default function AIKeysTab() {
                     ${stats.estimated_cost_usd.toFixed(4)}
                   </div>
                   <div className="text-[10px] text-slate-500 mt-1 flex items-center gap-1">
-                    <span>Fireworks AI тарифы</span>
+                    <span>Syntee Gateway тарифы (приблизительно)</span>
                   </div>
                 </div>
 

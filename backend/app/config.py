@@ -27,4 +27,7 @@ class Settings(BaseSettings):
     # AI Configuration (Fallback)
     DEFAULT_FALLBACK_TEMPLATE: str = "В данный момент линия поддержки перегружена. Оператор ответит вам в течение нескольких минут."
 
+    # Syntee Gateway (OpenAI-compatible) — все вызовы LLM / embeddings идут через него
+    SYNTEE_GATEWAY_URL: str = "https://syntee.fun/v1"
+
 settings = Settings()
