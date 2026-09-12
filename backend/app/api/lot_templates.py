@@ -237,14 +237,19 @@ async def create_creation_template(
     """Создать новый шаблон публикации лота (только для Владельцев/Админа)."""
     if current_user.role == UserRole.MANAGER:
         raise HTTPException(status_code=403, detail="Менеджеры не могут создавать глобальные шаблоны")
-        
+
+    # Защита: вырезаем системные hidden-поля формы (устаревший csrf_token и пр.),
+    # иначе публикация по шаблону получит 400 от FunPay
+    from app.services.chat_tools import _SYSTEM_FORM_KEYS
+    clean_fields = {k: v for k, v in (data.fields or {}).items() if k not in _SYSTEM_FORM_KEYS}
+
     new_template = LotCreationTemplate(
         user_id=current_user.id,
         name=data.name,
         node_id=data.node_id,
         game_name=data.game_name,
         subcategory_name=data.subcategory_name,
-        fields=data.fields
+        fields=clean_fields
     )
     db.add(new_template)
     await db.commit()
@@ -268,6 +273,11 @@ async def update_creation_template(
         raise HTTPException(status_code=404, detail="Шаблон не найден")
 
     update_data = data.dict(exclude_unset=True)
+    if "fields" in update_data and update_data["fields"]:
+        from app.services.chat_tools import _SYSTEM_FORM_KEYS
+        update_data["fields"] = {
+            k: v for k, v in update_data["fields"].items() if k not in _SYSTEM_FORM_KEYS
+        }
     for key, value in update_data.items():
         setattr(template, key, value)
 

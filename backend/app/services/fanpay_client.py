@@ -1110,7 +1110,13 @@ class FanpayClient:
                 # Заполняем свежие базовые поля формы
                 payload = details["fields"]
                 payload["csrf_token"] = csrf_token
+                # Системные поля всегда берём из свежей загрузки формы:
+                # в шаблонах могут лежать устаревшие csrf_token/form_created_at,
+                # из-за которых FunPay отвечает 400
+                fresh_only_keys = {"csrf_token", "form_created_at"}
                 for k, v in fields.items():
+                    if k in fresh_only_keys:
+                        continue
                     payload[k] = v
 
                 # Отправляем POST-запрос на создание лота

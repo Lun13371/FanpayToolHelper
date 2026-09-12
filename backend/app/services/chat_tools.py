@@ -260,6 +260,18 @@ def get_owner_id(user: User) -> int:
 _FORM_CACHE_TTL = 600.0
 _form_cache: Dict[str, Dict[str, Any]] = {}
 
+# Скрытые/системные поля формы FunPay: их нельзя сохранять в шаблон —
+# при публикации они перезапишут свежие значения (csrf_token, form_created_at)
+# и FunPay вернёт 400
+_SYSTEM_FORM_KEYS = {
+    "csrf_token",
+    "form_created_at",
+    "offer_id",
+    "node_id",
+    "location",
+    "deleted",
+}
+
 
 def invalidate_form_cache() -> None:
     _form_cache.clear()
@@ -374,10 +386,18 @@ async def _tool_propose_lot_template(
         }
     draft["form"] = form_meta
 
-    # Объединяем: значения модели + дефолты формы (для полей, которые модель не заполнила)
+    # Объединяем: значения модели + дефолты формы (для полей, которые модель не заполнила).
+    # Системные hidden-поля (csrf_token, form_created_at и т.п.) исключаем —
+    # иначе они сохранятся в шаблон устаревшими и сломают публикацию (400 от FunPay)
     if form_meta:
-        merged = dict(form_meta["fields"])
-        merged.update({k: v for k, v in draft["fields"].items() if v not in (None, "")})
+        merged = {
+            k: v for k, v in form_meta["fields"].items()
+            if k not in _SYSTEM_FORM_KEYS
+        }
+        merged.update({
+            k: v for k, v in draft["fields"].items()
+            if v not in (None, "") and k not in _SYSTEM_FORM_KEYS
+        })
         draft["fields"] = merged
 
     result = {
