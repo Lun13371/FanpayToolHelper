@@ -37,6 +37,30 @@ OPEN_TOOLS: List[dict] = [
     {
         "type": "function",
         "function": {
+            "name": "propose_update_lot",
+            "description": (
+                "Точечно изменить СУЩЕСТВУЮЩИЙ лот Funpay, без создания шаблона или нового лота. "
+                "Показывает карточку подтверждения: запись только после клика пользователя. "
+                "Сначала list_account_lots и get_lot_details; передавай в changes ТОЛЬКО поля, "
+                "которые попросили изменить, с точными ключами из form_fields (price, amount, "
+                "active, fields[summary][ru], fields[desc][ru] и поля категории). "
+                "Остальные поля сохраняются. price — цена продавца (Вы получите), не цена покупателя с комиссией. "
+                "Для нескольких лотов вызови этот тул для каждого нужного lot_id."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "account_id": {"type": "integer", "description": "ID аккаунта владельца лота"},
+                    "lot_id": {"type": "string", "description": "ID существующего лота Funpay"},
+                    "changes": {"type": "object", "description": "Только изменяемые поля: точный ключ формы → новое значение"},
+                },
+                "required": ["account_id", "lot_id", "changes"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "search_categories",
             "description": (
                 "Поиск категорий (игр и подкатегорий) Funpay по названию. "
@@ -604,6 +628,37 @@ async def _tool_get_lot_details(db: AsyncSession, owner_id: int, args: dict) -> 
     return details
 
 
+async def _tool_propose_update_lot(db: AsyncSession, owner_id: int, args: dict) -> Tuple[dict, Optional[dict]]:
+    from app.services.fanpay_client import FanpayClient
+    from app.services.lot_patch import validate_lot_patch, validate_existing_lot_form
+
+    lot_id = str(args.get("lot_id") or "").strip()
+    if not lot_id.isdigit() or not args.get("account_id"):
+        return ({"error": "Нужны account_id и числовой lot_id из list_account_lots"}, None)
+    account = await _get_account(db, owner_id, args["account_id"])
+    if not account or not account.cookies:
+        return ({"error": "Верифицированный аккаунт не найден"}, None)
+    client = FanpayClient(account.golden_key, account.proxy_url, account.user_agent, account.cookies)
+    details = await client.get_lot_details(lot_id)
+    validate_existing_lot_form(details, lot_id)
+    patch = validate_lot_patch(details, args.get("changes"))
+    fields = details["fields"]
+    changes = [
+        {"key": key, "label": next((f.get("label", key) for f in details["form_fields"] if f["name"] == key), key),
+         "before": fields.get(key, ""), "after": value}
+        for key, value in patch.items() if str(fields.get(key, "")) != value
+    ]
+    if not changes:
+        return ({"status": "unchanged", "message": "У лота уже такие значения"}, None)
+    request = {
+        "action": "update_lot", "account_id": account.id, "account_name": account.name,
+        "lot_id": lot_id, "lot_name": fields.get("fields[summary][ru]", f"Лот {lot_id}"),
+        "changes": changes, "status": "pending",
+    }
+    return ({"status": "confirmation_required", "message": "Изменения подготовлены, но НЕ применены. Ждём подтверждения в карточке."},
+            {"type": "update_lot_request", "request": request})
+
+
 async def _tool_get_account_reviews(db: AsyncSession, owner_id: int, args: dict) -> dict:
     account = await _get_account(db, owner_id, args.get("account_id"))
     if not account:
@@ -709,6 +764,8 @@ async def execute_tool(
             return await _tool_propose_lot_template(db, owner_id, args)
         if name == "list_lot_templates":
             return (await _tool_list_lot_templates(db, owner_id), None)
+        if name == "propose_update_lot":
+            return await _tool_propose_update_lot(db, owner_id, args)
         if name == "propose_publish_lot":
             return await _tool_propose_publish_lot(db, owner_id, args)
         if name == "propose_delete_template":

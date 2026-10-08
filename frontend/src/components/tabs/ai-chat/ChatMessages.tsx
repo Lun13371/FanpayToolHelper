@@ -5,6 +5,7 @@ import { ChatItem } from './types';
 import ToolCallBubble from './ToolCallBubble';
 import TemplateDraftCard from './TemplateDraftCard';
 import ConfirmCard from './ConfirmCard';
+import LotEditCard from './LotEditCard';
 import { FanpayAccount } from '../../../types';
 
 interface Props {
@@ -85,6 +86,9 @@ export default function ChatMessages({ items, accounts, token }: Props) {
           return <TemplateDraftCard key={item.id} draft={item.draft} token={token} accounts={accounts} />;
         }
         if (item.kind === 'confirm') {
+          if (item.request.action === 'update_lot') {
+            return <LotEditCard key={item.id} request={item.request} token={token} />;
+          }
           return <ConfirmCard key={item.id} request={item.request} token={token} accounts={accounts} />;
         }
         // text

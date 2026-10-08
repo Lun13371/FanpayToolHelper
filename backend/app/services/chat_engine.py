@@ -75,6 +75,19 @@ SYSTEM_PROMPT = """Ты — встроенный AI-ассистент пане�
 - Анализируя статистику, давай полезные выводы: тренды, топ-лоты, что поднять/опустить,
   где вернуть деньги (возвраты), советы по описаниям.
 
+РЕДАКТИРОВАНИЕ СУЩЕСТВУЮЩИХ ЛОТОВ:
+- Ты МОЖЕШЬ менять существующие лоты через propose_update_lot(account_id, lot_id, changes).
+- Найди аккаунт и нужные лоты через list_accounts/list_account_lots, затем get_lot_details.
+- В changes передавай ТОЛЬКО запрошенные изменения с точными ключами из form_fields.
+  Например {"price": 80}; не присылай всю форму, не меняй описание/остаток/активность без просьбы.
+- Для группы лотов вызови propose_update_lot для каждого; не создавай вместо них новые шаблоны.
+- price — «Вы получите» (цена продавца). Цена покупателя с комиссией может отличаться:
+  если пользователь явно хочет цену покупателя, уточни расчёт, не приравнивай её к price.
+- После предложения говори «подготовлено, ждёт подтверждения», а НЕ «цены изменены».
+- Если тул вернул ошибку, НЕ повторяй тот же вызов с теми же аргументами.
+  Объясни причину. Если недоступна форма/авторизация аккаунта — останови пакет,
+  не перебирай все лоты и не создавай шаблоны в обход ошибки.
+
 ПРОЧЕЕ:
 - Пользователь может также попросить: показать шаблоны (list_lot_templates).
 - Форматируй ответы в Markdown: заголовки, **жирный**, списки, а статистику — таблицами
@@ -249,9 +262,11 @@ async def run_chat_turn(
     messages += await load_history(db, session.id)
 
     final_text = ""
+    failed_calls: Dict[str, dict] = {}
+    stop_repeated_tools = False
     for round_no in range(MAX_TOOL_ROUNDS):
         text, tool_calls = await _stream_llm(
-            db, model, messages, emit, use_tools=True
+            db, model, messages, emit, use_tools=not stop_repeated_tools
         )
 
         if not tool_calls:
@@ -283,15 +298,23 @@ async def run_chat_turn(
 
             emit({"type": "tool_call", "call_id": call_id, "name": name, "args": args})
 
-            result, ui_event = await chat_tools.execute_tool(db, user, name, args)
+            signature = name + ":" + json.dumps(args, sort_keys=True, ensure_ascii=False, default=str)
+            if signature in failed_calls:
+                result = {
+                    "error": "Повтор одинакового неудачного вызова остановлен. Объясни пользователю причину ошибки; изменения не выполнены.",
+                    "previous_error": failed_calls[signature].get("error"),
+                }
+                ui_event = None
+                stop_repeated_tools = True
+            else:
+                result, ui_event = await chat_tools.execute_tool(db, user, name, args)
+                if "error" in result:
+                    failed_calls[signature] = result
 
             emit({"type": "tool_result", "call_id": call_id, "name": name, "result": result})
-            if ui_event:
-                emit(ui_event)
-
             result_json = json.dumps(result, ensure_ascii=False, default=str)
-            # Сохраняем tool-сообщение
-            await save_message(
+            # Сохраняем предложение до отправки карточки клиенту.
+            saved_tool = await save_message(
                 db, session.id, "tool", result_json,
                 tool_name=name,
                 tool_payload={
@@ -301,6 +324,13 @@ async def run_chat_turn(
                     **({"ui": ui_event} if ui_event else {}),
                 },
             )
+            if ui_event:
+                if ui_event.get("type") == "update_lot_request":
+                    ui_event["request"]["message_id"] = saved_tool.id
+                    saved_tool.tool_payload = {**saved_tool.tool_payload, "ui": ui_event}
+                    db.add(saved_tool)
+                    await db.commit()
+                emit(ui_event)
             messages.append({
                 "role": "tool",
                 "tool_call_id": call_id,

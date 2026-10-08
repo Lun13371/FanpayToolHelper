@@ -1113,11 +1113,19 @@ class FanpayClient:
                 # Системные поля всегда берём из свежей загрузки формы:
                 # в шаблонах могут лежать устаревшие csrf_token/form_created_at,
                 # из-за которых FunPay отвечает 400
-                fresh_only_keys = {"csrf_token", "form_created_at"}
+                system_fields = {"csrf_token", "form_created_at", "offer_id", "offer", "node_id", "node", "location", "deleted"}
                 for k, v in fields.items():
-                    if k in fresh_only_keys:
-                        continue
-                    payload[k] = v
+                    if k in system_fields:
+                        continue  # Always retain identity/session values from the fresh form.
+                    if isinstance(v, bool):
+                        if v:
+                            payload[k] = "1"
+                        else:
+                            payload.pop(k, None)
+                    elif k in ("active", "auto_delivery", "deactivate_after_sale") and v in ("0", 0, None, ""):
+                        payload.pop(k, None)
+                    else:
+                        payload[k] = v
 
                 # Отправляем POST-запрос на создание лота
                 headers = {
@@ -1138,7 +1146,16 @@ class FanpayClient:
                             return True, "Лот успешно создан на Funpay!"
                         return False, f"Ошибка ответа: {res.text[:100]}"
                 else:
-                    return False, f"Ошибка запроса: {res.status_code}"
+                    # Do not log the payload: it contains tokens and delivery secrets.
+                    reason = ""
+                    try:
+                        error_data = res.json()
+                        if isinstance(error_data, dict):
+                            reason = str(error_data.get("desc") or error_data.get("message") or error_data.get("errors") or "")[:500]
+                    except ValueError:
+                        pass
+                    logger.warning("Создание лота node=%s: HTTP %s, причина=%s", node_id, res.status_code, reason or "нет JSON-описания")
+                    return False, f"Ошибка запроса: {res.status_code}" + (f" — {reason}" if reason else "")
             except Exception as e:
                 logger.error(f"Исключение при создании лота на ноде {node_id}: {e}")
                 return False, f"Исключение: {str(e)}"

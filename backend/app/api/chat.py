@@ -175,6 +175,84 @@ async def list_messages(
     return res.scalars().all()
 
 
+class LotEditDecision(BaseModel):
+    confirm: bool
+
+
+@router.post("/lot-edits/{message_id}/decision")
+async def decide_lot_edit(
+    message_id: int,
+    payload: LotEditDecision,
+    db: AsyncSession = Depends(get_session),
+    current_user: User = Depends(get_current_user),
+) -> Any:
+    from app.api.accounts import verify_account_access
+    from app.models.account import FanpayAccount
+    from app.services.fanpay_client import FanpayClient
+    from app.services.lot_patch import validate_lot_patch, validate_existing_lot_form
+
+    res = await db.execute(select(ChatMessage).where(ChatMessage.id == message_id).with_for_update())
+    msg = res.scalar_one_or_none()
+    if not msg:
+        raise HTTPException(404, "Предложение не найдено")
+    await _get_owned_session(db, current_user, msg.session_id)
+    ui = (msg.tool_payload or {}).get("ui") or {}
+    request = ui.get("request") or {}
+    if ui.get("type") != "update_lot_request" or request.get("action") != "update_lot":
+        raise HTTPException(400, "Это не предложение редактирования лота")
+    if request.get("status") != "pending":
+        raise HTTPException(409, "Предложение уже обработано. Для повтора создай новое")
+    await verify_account_access(db, current_user, request["account_id"])
+    account = await db.get(FanpayAccount, request["account_id"])
+    if not account or not account.cookies:
+        raise HTTPException(400, "Нужен верифицированный аккаунт")
+
+    async def persist(state: str, error: Optional[str] = None) -> None:
+        updated = {**request, "status": state, **({"error": error} if error else {})}
+        msg.tool_payload = {**msg.tool_payload, "ui": {**ui, "request": updated}}
+        db.add(msg)
+        await db.commit()
+
+    if not payload.confirm:
+        await persist("cancelled")
+        return {"status": "cancelled"}
+    # Durable claim prevents a double-click/reloaded history from saving twice.
+    await persist("executing")
+    try:
+        client = FanpayClient(account.golden_key, account.proxy_url, account.user_agent, account.cookies)
+        details = await client.get_lot_details(request["lot_id"])
+        fields = details.get("fields") or {}
+        validate_existing_lot_form(details, request["lot_id"])
+        changes = request["changes"]
+        patch = validate_lot_patch(details, {c["key"]: c["after"] for c in changes})
+        for c in changes:
+            if str(fields.get(c["key"], "")) != str(c["before"]):
+                raise ValueError(f"Поле {c['label']} изменилось после предложения. Запроси новое подтверждение")
+        checkbox_keys = {f["name"] for f in details.get("form_fields", []) if f.get("type") == "checkbox"}
+        save_patch = {k: (v == "1" if k in checkbox_keys else v) for k, v in patch.items()}
+        ok = await client.save_lot_settings(request["lot_id"], fields, custom_fields=save_patch)
+        if not ok:
+            raise ValueError("Funpay не подтвердил сохранение лота")
+        # Refresh cached summaries without making a second remote write.
+        cache = [dict(lot) for lot in (account.lots_cache or [])]
+        for lot in cache:
+            if str(lot.get("id") or lot.get("lot_id")) == request["lot_id"]:
+                if "price" in patch:
+                    lot["price"] = float(patch["price"])
+                if "amount" in patch:
+                    lot["amount"] = int(patch["amount"])
+                if "fields[summary][ru]" in patch:
+                    lot["name"] = patch["fields[summary][ru]"]
+        account.lots_cache = cache
+        account.last_synced = None
+        db.add(account)
+        await persist("confirmed")
+    except Exception as e:
+        await persist("failed", str(e))
+        raise HTTPException(400, str(e)) from e
+    return {"status": "confirmed", "lot_id": request["lot_id"], "changes": patch}
+
+
 # ---------------------------------------------------------------------------
 # SSE-стриминг диалога
 # ---------------------------------------------------------------------------

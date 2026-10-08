@@ -9,6 +9,8 @@ const TOOL_LABELS: Record<string, string> = {
   list_lot_templates: 'Список шаблонов',
   delete_lot_template: 'Удаление шаблона',
   list_accounts: 'Список аккаунтов',
+  propose_update_lot: 'Подготовка изменений существующего лота',
+  get_lot_details: 'Загрузка текущих полей лота',
 };
 
 export default function ToolCallBubble({ item }: { item: Extract<ChatItem, { kind: 'tool' }> }) {

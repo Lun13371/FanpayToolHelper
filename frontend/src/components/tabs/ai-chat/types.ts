@@ -1,5 +1,17 @@
 import { TemplateDraft, PublishRequest, DeleteRequest } from '../../../types';
 
+export interface LotEditRequest {
+  action: 'update_lot';
+  message_id: number;
+  account_id: number;
+  account_name: string;
+  lot_id: string;
+  lot_name: string;
+  status: 'pending' | 'executing' | 'confirmed' | 'cancelled' | 'failed';
+  error?: string;
+  changes: { key: string; label: string; before: string; after: string }[];
+}
+
 /** Элемент ленты чата (UI-модель, в которую разворачиваются сообщения и SSE-события) */
 export type ChatItem =
   | { kind: 'text'; id: string; role: 'user' | 'assistant'; content: string; streaming?: boolean }
@@ -13,7 +25,7 @@ export type ChatItem =
       running: boolean;
     }
   | { kind: 'draft'; id: string; draft: TemplateDraft }
-  | { kind: 'confirm'; id: string; request: PublishRequest | DeleteRequest };
+  | { kind: 'confirm'; id: string; request: PublishRequest | DeleteRequest | LotEditRequest };
 
 export interface SSEEvent {
   type: string;
@@ -23,7 +35,7 @@ export interface SSEEvent {
   args?: Record<string, any>;
   result?: any;
   draft?: TemplateDraft;
-  request?: PublishRequest | DeleteRequest;
+  request?: PublishRequest | DeleteRequest | LotEditRequest;
   session_id?: number;
   title?: string;
   message?: string;

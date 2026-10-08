@@ -257,6 +257,7 @@ export default function AIChatTab() {
               }
               break;
             case 'publish_request':
+            case 'update_lot_request':
             case 'delete_request':
               if (ev.request) {
                 setItems((prev) => [
